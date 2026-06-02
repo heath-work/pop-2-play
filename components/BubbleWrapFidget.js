@@ -244,23 +244,25 @@ export default function BubbleWrapFidget() {
 
     if (!stage || !bubblesEl) return;
 
-    /* ── Audio (Web Audio buffer + <audio> pool fallback) ──────── */
+    /* ── Audio (Web Audio only) ─────────────────────────────────
+       The pop sound is fetched as an ArrayBuffer, decoded once into
+       a reusable AudioBuffer, and replayed by spinning up a fresh
+       AudioBufferSourceNode per pop. Every play* path early-returns
+       when `audioEnabled` is false (driven by the Audio toggles).
+
+       The old design layered an <audio> pool fallback on top of the
+       Web Audio path with a muted-unlock primer; that pattern was
+       fragile on iOS (the unlocked elements would freeze if not
+       used within the same gesture). Since every play call here
+       originates from a user gesture (bubble tap, Get popping,
+       Fast select), Web Audio alone is enough — `ensureAudio()`
+       creates / resumes the AudioContext synchronously inside the
+       gesture, and `playPop` just spawns a BufferSource. */
     const POP_SRC = '/bubble-pop.wav';
-    const POP_POOL_SIZE = 8;
-    // Master audio mute flag — flipped from the Settings modal toggle.
-    // Every play* function early-returns when this is false.
     let audioEnabled = true;
     let audioCtx = null;
     let popBuffer = null;
     let popBufferLoading = false;
-    const popPool = [];
-    let popPoolIdx = 0;
-    let popPoolUnlocked = false;
-    for (let i = 0; i < POP_POOL_SIZE; i++) {
-      const a = new Audio(POP_SRC);
-      a.preload = 'auto';
-      popPool.push(a);
-    }
     function ensureAudio() {
       if (!audioCtx) {
         const AC = window.AudioContext || window.webkitAudioContext;
@@ -270,18 +272,6 @@ export default function BubbleWrapFidget() {
       }
       if (audioCtx && audioCtx.state === 'suspended') {
         audioCtx.resume().catch(() => {});
-      }
-      if (!popPoolUnlocked) {
-        popPoolUnlocked = true;
-        for (const a of popPool) {
-          a.muted = true;
-          const p = a.play();
-          if (p && typeof p.then === 'function') {
-            p.then(() => { a.muted = false; }).catch(() => { a.muted = false; });
-          } else {
-            a.muted = false;
-          }
-        }
       }
     }
     async function loadPopBuffer() {
@@ -294,35 +284,21 @@ export default function BubbleWrapFidget() {
         popBuffer = await new Promise((resolve, reject) =>
           audioCtx.decodeAudioData(data, resolve, reject));
       } catch (err) {
-        console.warn('[pop] Web Audio decode failed; using <audio> pool:', err);
+        console.warn('[pop] Web Audio decode failed:', err);
       } finally {
         popBufferLoading = false;
       }
     }
     function playPop(variation = 0) {
-      if (!audioEnabled) return;
-      if (audioCtx && popBuffer) {
-        try {
-          const src = audioCtx.createBufferSource();
-          src.buffer = popBuffer;
-          src.detune.value = variation * 30 + (Math.random() * 60 - 30);
-          const gain = audioCtx.createGain();
-          gain.gain.value = 0.85 + Math.random() * 0.15;
-          src.connect(gain).connect(audioCtx.destination);
-          src.start();
-          return;
-        } catch (_) {}
-      }
-      const a = popPool[popPoolIdx];
-      popPoolIdx = (popPoolIdx + 1) % POP_POOL_SIZE;
+      if (!audioEnabled || !audioCtx || !popBuffer) return;
       try {
-        a.pause();
-        a.muted = false;
-        a.currentTime = 0;
-        a.playbackRate = 0.92 + (variation * 0.04) + Math.random() * 0.14;
-        a.volume = 0.85 + Math.random() * 0.15;
-        const p = a.play();
-        if (p && typeof p.catch === 'function') p.catch(() => {});
+        const src = audioCtx.createBufferSource();
+        src.buffer = popBuffer;
+        src.detune.value = variation * 30 + (Math.random() * 60 - 30);
+        const gain = audioCtx.createGain();
+        gain.gain.value = 0.85 + Math.random() * 0.15;
+        src.connect(gain).connect(audioCtx.destination);
+        src.start();
       } catch (_) {}
     }
     const ROW_COMPLETE_NOTE_FREQS    = [523.25, 659.25, 783.99];
