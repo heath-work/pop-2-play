@@ -115,6 +115,43 @@ body {
    2. #bubbles — transparent container; bubble buttons use
       mix-blend-mode: screen to composite the dark glassy PNG against
       the body's app_BG.png starfield. */
+/* Sheet wrapper — holds the frame plate + bubble grid together so the
+   refill animation slides both as one unit. .sheet-out exits the
+   popped sheet, .sheet-in welcomes the fresh one. */
+.sheet {
+  position: absolute;
+  inset: 0;
+}
+/* Inner wrapper that applies the device-tilt rotation. Kept separate
+   from the outer .sheet so its rotate transform composes cleanly
+   with the slide-out / slide-in translateX on .sheet without one
+   clobbering the other. JS writes --tilt-x / --tilt-y in degrees
+   based on the gyroscope readings, clamped to a small range so the
+   effect stays subtle. */
+.sheet-tilt {
+  position: absolute;
+  inset: 0;
+  --tilt-x: 0deg;
+  --tilt-y: 0deg;
+  transform: perspective(900px) rotateX(var(--tilt-x)) rotateY(var(--tilt-y));
+  transform-origin: 50% 40%;
+  transition: transform 220ms cubic-bezier(.22, 1, .36, 1);
+  will-change: transform;
+}
+.sheet.sheet-out {
+  animation: sheet-out 420ms cubic-bezier(.55, 0, .8, .3) forwards;
+}
+.sheet.sheet-in {
+  animation: sheet-in 540ms cubic-bezier(.2, .85, .3, 1);
+}
+@keyframes sheet-out {
+  0%   { transform: translateX(0);     opacity: 1;   }
+  100% { transform: translateX(-115%); opacity: 0.2; }
+}
+@keyframes sheet-in {
+  0%   { transform: translateX(115%);  opacity: 0.2; }
+  100% { transform: translateX(0);     opacity: 1;   }
+}
 #bubbles {
   position: absolute;
   inset: 0;

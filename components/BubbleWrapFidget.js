@@ -609,20 +609,31 @@ export default function BubbleWrapFidget() {
       }, 280);
     }
     function refillSheet() {
-      for (const state of bubbleStates.values()) {
-        state.popped = false;
-        state.popping = false;
-      }
-      bubbleNumPermutation = null;
-      rebuild();
-      bubblesEl.classList.remove('slide-in');
-      void bubblesEl.offsetWidth;
-      bubblesEl.classList.add('slide-in');
-      bubblesEl.addEventListener('animationend', function onSlideEnd() {
-        bubblesEl.classList.remove('slide-in');
-        bubblesEl.removeEventListener('animationend', onSlideEnd);
-      });
+      const sheetEl = document.getElementById('sheet');
       playSwoosh();
+      const reset = () => {
+        for (const state of bubbleStates.values()) {
+          state.popped = false;
+          state.popping = false;
+        }
+        bubbleNumPermutation = null;
+        rebuild();
+      };
+      if (!sheetEl) { reset(); return; }
+      // Phase 1: slide the popped sheet out.
+      sheetEl.classList.remove('sheet-in');
+      sheetEl.classList.add('sheet-out');
+      setTimeout(() => {
+        // Phase 2: reset state (which re-renders bubble buttons) and
+        // slide the fresh sheet back in. The two animations are
+        // sequenced via setTimeout so they don't race on the same
+        // .animationend event.
+        sheetEl.classList.remove('sheet-out');
+        reset();
+        void sheetEl.offsetWidth;        // reflow before re-adding class
+        sheetEl.classList.add('sheet-in');
+        setTimeout(() => sheetEl.classList.remove('sheet-in'), 600);
+      }, 420);
     }
 
     /* ── Selection state ───────────────────────────────────────── */
@@ -1138,6 +1149,56 @@ export default function BubbleWrapFidget() {
     initBallScene();
     refreshPill();
 
+    /* Device-tilt parallax for the bubble sheet. The first orientation
+       event seeds the "neutral" angle so the user's natural hold
+       position reads as no tilt; subsequent events drive a clamped
+       small rotation of the .sheet-tilt wrapper.
+       On iOS 13+ the DeviceOrientationEvent API requires explicit
+       permission via a user gesture; we request it on the first
+       pointerdown anywhere on the page. Other platforms skip the
+       permission dance and attach the listener immediately. */
+    let tiltNeutral = null;
+    let tiltEnabled = false;
+    const sheetTiltEl = document.getElementById('sheetTilt');
+    function onTilt(e) {
+      if (e.beta == null || e.gamma == null || !sheetTiltEl) return;
+      if (!tiltNeutral) tiltNeutral = { beta: e.beta, gamma: e.gamma };
+      const db = e.beta  - tiltNeutral.beta;   // pitch (forward/back)
+      const dg = e.gamma - tiltNeutral.gamma;  // roll  (left/right)
+      // Map ~22° of physical tilt to ~6° of rotation — subtle, never
+      // distracting. Sign flip on X so tipping the top of the phone
+      // away from the user tilts the sheet toward the camera.
+      const MAX = 6;
+      const tiltX = Math.max(-MAX, Math.min(MAX, -db * (MAX / 22)));
+      const tiltY = Math.max(-MAX, Math.min(MAX,  dg * (MAX / 22)));
+      sheetTiltEl.style.setProperty('--tilt-x', tiltX.toFixed(2) + 'deg');
+      sheetTiltEl.style.setProperty('--tilt-y', tiltY.toFixed(2) + 'deg');
+    }
+    async function enableTilt() {
+      if (tiltEnabled) return;
+      if (typeof window === 'undefined' || typeof DeviceOrientationEvent === 'undefined') return;
+      const needsPerm =
+        typeof DeviceOrientationEvent.requestPermission === 'function';
+      try {
+        if (needsPerm) {
+          const result = await DeviceOrientationEvent.requestPermission();
+          if (result !== 'granted') return;
+        }
+        window.addEventListener('deviceorientation', onTilt, { signal });
+        tiltEnabled = true;
+      } catch {
+        /* user denied or API unavailable — sheet just stays flat */
+      }
+    }
+    // Try immediately for platforms that don't need permission (Android,
+    // most desktop sensors). On iOS this no-ops, then the pointerdown
+    // listener triggers the permission request on first touch.
+    if (typeof DeviceOrientationEvent !== 'undefined' &&
+        typeof DeviceOrientationEvent.requestPermission !== 'function') {
+      enableTilt();
+    }
+    window.addEventListener('pointerdown', enableTilt, { once: true, signal });
+
     /* Rebake ball textures once SharpGrotesk Medium has loaded. Canvas
        2d uses the OS fallback if the font isn't ready when fillText is
        called, so any texture baked during the initial paint (e.g. a
@@ -1199,8 +1260,17 @@ export default function BubbleWrapFidget() {
     <>
       <div className="stage" id="stage">
         <div id="cloudLayer" />
-        <div id="bubbleFrame" />
-        <div id="bubbles" />
+        {/* Two-layer sheet:
+            - .sheet handles the slide-out / slide-in refill (translateX).
+            - .sheet-tilt handles the device-orientation tilt (rotateX/Y
+              + perspective). Nesting keeps the two transform stacks
+              independent so they compose cleanly. */}
+        <div className="sheet" id="sheet">
+          <div className="sheet-tilt" id="sheetTilt">
+            <div id="bubbleFrame" />
+            <div id="bubbles" />
+          </div>
+        </div>
         <div className="status-spacer" />
         <div className="toast" id="toast" />
       </div>
