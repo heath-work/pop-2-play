@@ -203,19 +203,38 @@ body {
   100% { transform: translateX(0); }
 }
 
-/* Pop burst — soft expanding white halo */
-.burst {
+/* Pop burst — a spray of little bubble particles radiating from the
+   pop point. Each .burst-particle is rendered with the same
+   bubble-static.png artwork (so the spray reads as glassy droplets,
+   not abstract circles), composited with mix-blend-mode: screen so
+   the black PNG background drops out against the dark stage. The
+   --bx/--by custom properties (set per-particle in JS) drive the
+   translate target, scaling with the size of the popped bubble. */
+.burst-particle {
   position: absolute;
   pointer-events: none;
-  animation: burst 480ms cubic-bezier(.2, .8, .3, 1) forwards;
-  transform-origin: center;
+  background: url('/bubble-static.png') center / 100% 100% no-repeat;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(255,255,255,0.7) 0%, rgba(255,255,255,0.0) 60%);
   mix-blend-mode: screen;
+  transform-origin: center;
+  animation: burst-fly 600ms cubic-bezier(.18, .82, .35, 1) forwards;
+  will-change: transform, opacity;
+  --bx: 0px;
+  --by: 0px;
 }
-@keyframes burst {
-  0%   { transform: scale(0.4); opacity: 0.9; }
-  100% { transform: scale(2.0); opacity: 0;  }
+@keyframes burst-fly {
+  0% {
+    transform: translate(0, 0) scale(0.35);
+    opacity: 0;
+  }
+  18% {
+    transform: translate(calc(var(--bx) * 0.22), calc(var(--by) * 0.22)) scale(0.7);
+    opacity: 0.95;
+  }
+  100% {
+    transform: translate(var(--bx), var(--by)) scale(1.1);
+    opacity: 0;
+  }
 }
 
 /* Hidden — legacy randomise button (lives in JS but visually gone) */

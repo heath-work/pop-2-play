@@ -524,16 +524,37 @@ export default function BubbleWrapFidget() {
       }
     }
 
+    // Pop burst — spray of small translucent bubble particles flying
+    // outward from the pop point with randomised angles and distances.
+    // Each particle uses bubble-static.png with mix-blend-mode: screen
+    // so it reads as a glassy droplet against the dark backdrop, then
+    // fades out as it travels (CSS keyframes drive the movement).
     function spawnBurst(cx, cy, size) {
-      const el = document.createElement('div');
-      el.className = 'burst';
-      const s = size;
-      el.style.left = (cx - s / 2) + 'px';
-      el.style.top = (cy - s / 2) + 'px';
-      el.style.width = s + 'px';
-      el.style.height = s + 'px';
-      bubblesEl.appendChild(el);
-      el.addEventListener('animationend', () => el.remove(), { once: true });
+      const PARTICLE_COUNT = 10;
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        // Spread evenly around the circle then jitter so particles
+        // don't form a perfect compass-rose pattern.
+        const angle = (i / PARTICLE_COUNT) * Math.PI * 2 + (Math.random() - 0.5) * 0.6;
+        const dist  = size * (0.65 + Math.random() * 0.6);
+        const dx = Math.cos(angle) * dist;
+        const dy = Math.sin(angle) * dist;
+        const ps = size * (0.18 + Math.random() * 0.18);
+        const el = document.createElement('div');
+        el.className = 'burst-particle';
+        el.style.left   = (cx - ps / 2) + 'px';
+        el.style.top    = (cy - ps / 2) + 'px';
+        el.style.width  = ps + 'px';
+        el.style.height = ps + 'px';
+        el.style.setProperty('--bx', dx + 'px');
+        el.style.setProperty('--by', dy + 'px');
+        // Slight per-particle delay/duration variance breaks up the
+        // synchronised feel — looks more like a real spray than a
+        // mechanical explosion.
+        el.style.animationDelay    = (Math.random() * 40) + 'ms';
+        el.style.animationDuration = (520 + Math.random() * 180) + 'ms';
+        bubblesEl.appendChild(el);
+        el.addEventListener('animationend', () => el.remove(), { once: true });
+      }
     }
 
     function popBubble(num) {
