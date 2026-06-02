@@ -293,6 +293,18 @@ export default function BubbleWrapFidget() {
         const data = await res.arrayBuffer();
         popBuffer = await new Promise((resolve, reject) =>
           audioCtx.decodeAudioData(data, resolve, reject));
+        // Warm the Web Audio path with a near-silent pre-play so the
+        // first real pop doesn't glitch on a cold audio pipeline
+        // (iOS in particular needs this — the first playback through
+        // a fresh AudioContext can scrub/click).
+        try {
+          const src = audioCtx.createBufferSource();
+          src.buffer = popBuffer;
+          const g = audioCtx.createGain();
+          g.gain.value = 0.0001;
+          src.connect(g).connect(audioCtx.destination);
+          src.start();
+        } catch (_) {}
       } catch (err) {
         console.warn('[pop] Web Audio decode failed; using <audio> pool:', err);
       } finally {
@@ -1103,19 +1115,12 @@ export default function BubbleWrapFidget() {
       refreshSettingsLabels();
     }, { signal });
     if (settingsTiltEl) settingsTiltEl.addEventListener('click', () => {
-      if (tiltEnabled) {
-        // Disable: detach listener, snap rotation back to flat.
-        window.removeEventListener('deviceorientation', onTilt);
-        tiltEnabled = false;
-        tiltNeutral = null;
-        sheetTiltEl?.style.setProperty('--tilt-x', '0deg');
-        sheetTiltEl?.style.setProperty('--tilt-y', '0deg');
-      } else {
-        // Re-enable. The toggle click is itself a user gesture, so
-        // we can call requestPermission synchronously here on iOS.
-        enableTiltOnGesture();
-      }
+      if (tiltEnabled) disableTilt();
+      else             enableTiltOnGesture();
       refreshSettingsLabels();
+      // iOS's permission resolves asynchronously; refresh again once
+      // the promise typically settles so the toggle reflects reality.
+      setTimeout(refreshSettingsLabels, 400);
     }, { signal });
     if (settingsSkipEl) settingsSkipEl.addEventListener('click', () => {
       ensureAudio();
@@ -1274,18 +1279,57 @@ export default function BubbleWrapFidget() {
         attachOrientationListener();
       }
     }
-    // Capture-phase so this runs BEFORE any bubble-button pointerdown.
-    // Self-removes once tilt is enabled (or permission denied — we
-    // don't keep prompting on every tap).
-    function onFirstGesture() {
-      enableTiltOnGesture();
-      window.removeEventListener('pointerdown', onFirstGesture, true);
-      window.removeEventListener('touchstart',  onFirstGesture, true);
-      window.removeEventListener('click',       onFirstGesture, true);
+    // Tilt is opted-in from either the intro screen toggle or the
+    // settings modal toggle — both are user-gesture click handlers, so
+    // they can call enableTiltOnGesture (and the iOS permission
+    // request) directly. No window-level listeners needed.
+    function disableTilt() {
+      if (!tiltEnabled) return;
+      window.removeEventListener('deviceorientation', onTilt);
+      tiltEnabled = false;
+      tiltNeutral = null;
+      sheetTiltEl?.style.setProperty('--tilt-x', '0deg');
+      sheetTiltEl?.style.setProperty('--tilt-y', '0deg');
     }
-    window.addEventListener('pointerdown', onFirstGesture, { capture: true, signal });
-    window.addEventListener('touchstart',  onFirstGesture, { capture: true, signal });
-    window.addEventListener('click',       onFirstGesture, { capture: true, signal });
+
+    /* ── Intro overlay ─────────────────────────────────────────── */
+    const introEl       = document.getElementById('intro');
+    const introStartEl  = document.getElementById('introStart');
+    const introAudioEl  = document.getElementById('introAudio');
+    const introTiltEl   = document.getElementById('introTilt');
+    function refreshIntroToggles() {
+      if (introAudioEl) introAudioEl.setAttribute('aria-pressed', audioEnabled ? 'true' : 'false');
+      if (introTiltEl)  introTiltEl.setAttribute('aria-pressed',  tiltEnabled  ? 'true' : 'false');
+    }
+    refreshIntroToggles();
+    if (introAudioEl) introAudioEl.addEventListener('click', () => {
+      audioEnabled = !audioEnabled;
+      refreshIntroToggles();
+      refreshSettingsLabels();
+    }, { signal });
+    if (introTiltEl) introTiltEl.addEventListener('click', () => {
+      // Click IS a user gesture — call enableTiltOnGesture/disableTilt
+      // synchronously so iOS's requestPermission stays inside it.
+      if (tiltEnabled) {
+        disableTilt();
+        refreshIntroToggles();
+        refreshSettingsLabels();
+      } else {
+        enableTiltOnGesture();
+        // requestPermission is async on iOS — refresh on next tick AND
+        // again after the permission promise typically resolves, so
+        // the toggle reflects the granted state.
+        refreshIntroToggles();
+        setTimeout(() => { refreshIntroToggles(); refreshSettingsLabels(); }, 400);
+      }
+    }, { signal });
+    if (introStartEl) introStartEl.addEventListener('click', () => {
+      ensureAudio();
+      introEl?.classList.add('intro-hide');
+      // Remove from layout once the fade finishes so it stops eating
+      // pointer events / breaking the WebGL canvas's interaction layer.
+      setTimeout(() => introEl?.remove(), 380);
+    }, { signal });
 
     /* Rebake ball textures once SharpGrotesk Medium has loaded. Canvas
        2d uses the OS fallback if the font isn't ready when fillText is
@@ -1346,6 +1390,55 @@ export default function BubbleWrapFidget() {
 
   return (
     <>
+      {/* Intro overlay — dismissed by the "Get popping" CTA. The
+          bubble grid renders behind it (blurred via the panel's
+          backdrop-filter). Audio + Tilt toggles preset their game
+          state before the user dives in. */}
+      <div className="intro" id="intro">
+        <div className="intro-content">
+          <img
+            src="/logo.png"
+            className="intro-logo"
+            alt="Powerball Pop & Play"
+            draggable="false"
+          />
+          <p className="intro-tagline">
+            Tap or swipe to pop the bubbles and unlock your lucky numbers.
+          </p>
+          <button className="intro-cta" id="introStart" type="button">
+            Get popping
+          </button>
+        </div>
+        <div className="intro-toggles">
+          <div className="intro-toggle">
+            <span className="intro-toggle-label">Audio</span>
+            <button
+              className="intro-switch"
+              id="introAudio"
+              type="button"
+              aria-pressed="true"
+              aria-label="Toggle audio"
+            >
+              <span className="intro-switch-off">Off</span>
+              <span className="intro-switch-on">On</span>
+            </button>
+          </div>
+          <div className="intro-toggle">
+            <span className="intro-toggle-label">Tilt</span>
+            <button
+              className="intro-switch"
+              id="introTilt"
+              type="button"
+              aria-pressed="false"
+              aria-label="Toggle tilt"
+            >
+              <span className="intro-switch-off">Off</span>
+              <span className="intro-switch-on">On</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
       <div className="stage" id="stage">
         <div id="cloudLayer" />
         {/* Two-layer sheet:

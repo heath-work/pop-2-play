@@ -722,5 +722,146 @@ body {
    selectors doesn't blow up. */
 .modal-backdrop { display: none !important; }
 
-/* ── Intro overlay — hidden in this redesign ─────────────────── */
-.intro-overlay { display: none !important; }
+/* ── Intro overlay (new design) ──────────────────────────────────
+   Full-screen panel with a dark-blue blurred wash over the bubble
+   grid behind it. Holds the logo lockup, tagline, primary "Get
+   popping" CTA, and Audio / Tilt slider toggles. Dismissed by
+   "Get popping" — JS toggles .intro-hide which fades it out. */
+.intro {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(0, 8, 60, 0.62);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  backdrop-filter: blur(18px) saturate(140%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  padding: 64px 24px 44px;
+  text-align: center;
+  transition: opacity 360ms ease-out;
+}
+.intro.intro-hide {
+  opacity: 0;
+  pointer-events: none;
+}
+.intro-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 30px;
+  margin-top: 60px;
+}
+.intro-logo {
+  width: min(100%, 400px);
+  height: auto;
+  display: block;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.intro-tagline {
+  font-family: 'SharpGrotesk', var(--ctl-font);
+  font-size: 16px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.92);
+  line-height: 1.35;
+  max-width: 320px;
+  margin: 0;
+  text-rendering: geometricPrecision;
+}
+/* Get popping — large purple pill. */
+.intro-cta {
+  height: 48px;
+  min-width: 280px;
+  border-radius: 999px;
+  background: #9951DB;
+  border: none;
+  color: #fff;
+  font-family: 'SharpGrotesk', var(--ctl-font);
+  font-size: 19px;
+  font-weight: 400;
+  cursor: pointer;
+  text-rendering: geometricPrecision;
+  padding: 0 32px;
+  box-shadow: 0 10px 28px rgba(80, 40, 180, 0.45);
+  transition: transform 120ms ease, background 180ms ease;
+}
+.intro-cta:hover  { background: #b591ff; }
+.intro-cta:active { transform: translateY(2px); }
+
+/* Footer toggles. Each .intro-toggle is a label + slider pill. The
+   slider has two halves (Off / On) and a thumb that translates
+   between them; aria-pressed drives the thumb position via CSS. */
+.intro-toggles {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  margin-bottom: 48px;
+  padding: 0 24px;
+}
+.intro-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+.intro-toggle-label {
+  font-family: 'SharpGrotesk', var(--ctl-font);
+  font-size: 14px;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.92);
+  text-rendering: geometricPrecision;
+}
+.intro-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  height: 32px;
+  border-radius: 999px;
+  background: transparent;
+  border: 2px solid rgba(170, 130, 255, 0.55);
+  padding: 0;
+  cursor: pointer;
+  font-family: 'SharpGrotesk', var(--ctl-font);
+  font-size: 14px;
+  font-weight: 400;
+  color: #fff;
+  overflow: visible;
+  text-rendering: geometricPrecision;
+}
+.intro-switch-off,
+.intro-switch-on {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 22px;
+  min-width: 66px;
+  border-radius: 999px;
+  transition: color 180ms ease;
+}
+/* Sliding purple thumb. Sits behind the labels (z:1); aria-pressed
+   toggles its left offset between the Off (left) and On (right) half. */
+.intro-switch::before {
+  content: '';
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: calc(50% + 4px);
+  border-radius: 999px;
+  background: rgba(170, 130, 255, 0.55);
+  transition: left 240ms cubic-bezier(.2, 1, .35, 1);
+  left: -2px;
+  z-index: 1;
+}
+.intro-switch[aria-pressed="true"]::before {
+  left: calc(50% - 2px);
+}
+/* Dim whichever label is inactive. */
+.intro-switch[aria-pressed="false"] .intro-switch-on  { color: rgba(255, 255, 255, 0.55); }
+.intro-switch[aria-pressed="true"]  .intro-switch-off { color: rgba(255, 255, 255, 0.55); }
