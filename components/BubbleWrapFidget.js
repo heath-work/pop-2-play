@@ -7,7 +7,7 @@ import * as THREE from 'three';
    badge sits in the top-right corner of the viewport so you can
    confirm at a glance that the iOS PWA cache has picked up the
    latest build. */
-const APP_VERSION = 'v12';
+const APP_VERSION = 'v14';
 
 /* ════════════════════════════════════════════════════════════════════
    3D LOTTO BALL TEXTURE — ported from the shakeit app.
@@ -1132,9 +1132,16 @@ export default function BubbleWrapFidget() {
       closeSettings();
     }, { signal });
     if (settingsExitEl) settingsExitEl.addEventListener('click', () => {
-      // No real "exit" on web — close the modal. Hook for native
-      // PWA shell to close the window later.
+      // Exit Game = reset progress + bring the intro screen back.
+      // The intro was hidden (not removed) by Get popping, so we
+      // can re-show it just by stripping .intro-hide and resuming
+      // the intro ball's rAF.
       closeSettings();
+      resetAll();
+      if (introEl) {
+        introEl.classList.remove('intro-hide');
+        if (resumeIntroBall) resumeIntroBall();
+      }
     }, { signal });
     if (settingsHowToEl) settingsHowToEl.addEventListener('click', () => {
       // Placeholder — How-to-play panel TBD.
@@ -1304,10 +1311,15 @@ export default function BubbleWrapFidget() {
 
     /* Intro hero ball — a separate Three.js scene drawing one ball
        (number 35) inside the bubble cutout, slowly spinning on Y.
-       Reuses makeBallTexture() from the module-level renderer so we
-       get the same look as in-game balls. Disposed when the intro
-       overlay is dismissed. */
+       Reuses makeBallTexture() so we get the same look as in-game
+       balls. The intro overlay is HIDDEN (not removed) when the
+       user starts the game; pause/resume let us stop the rAF while
+       hidden and resume it if the user re-opens the intro via the
+       settings modal's Exit Game button. Fully disposed only on
+       component unmount. */
     let disposeIntroBall = null;
+    let pauseIntroBall   = null;
+    let resumeIntroBall  = null;
     (function initIntroBall() {
       const introBallCanvas = document.getElementById('introBallCanvas');
       if (!introBallCanvas) return;
@@ -1429,10 +1441,10 @@ export default function BubbleWrapFidget() {
         dragEl.addEventListener('pointercancel', endDrag, { signal });
       }
 
-      let raf;
+      let raf = null;
       let stopped = false;
       function tick(now) {
-        if (stopped) return;
+        if (stopped) { raf = null; return; }
         raf = requestAnimationFrame(tick);
         if (!dragging) {
           if (!lastShuffle || now - lastShuffle > SHUFFLE_EVERY) {
@@ -1449,9 +1461,18 @@ export default function BubbleWrapFidget() {
         renderer.render(scene, camera);
       }
       raf = requestAnimationFrame(tick);
+      pauseIntroBall = () => {
+        if (raf) { cancelAnimationFrame(raf); raf = null; }
+      };
+      resumeIntroBall = () => {
+        if (!raf && !stopped) {
+          lastShuffle = 0;          // force a fresh shuffle on resume
+          raf = requestAnimationFrame(tick);
+        }
+      };
       disposeIntroBall = () => {
         stopped = true;
-        if (raf) cancelAnimationFrame(raf);
+        if (raf) { cancelAnimationFrame(raf); raf = null; }
         ro?.disconnect();
         geometry.dispose();
         tex.dispose();
@@ -1489,13 +1510,13 @@ export default function BubbleWrapFidget() {
     if (introStartEl) introStartEl.addEventListener('click', () => {
       // Don't call ensureAudio() here — see comment in the original
       // (matches the iOS-friendly bubble-wrap-fidget gesture flow).
+      // .intro-hide fades it out + sets pointer-events:none so the
+      // canvas underneath becomes interactive. We KEEP the element
+      // in the DOM (no remove) so the Exit Game button can bring it
+      // back later without re-mounting. Three.js rAF is paused
+      // while hidden to save GPU.
       introEl?.classList.add('intro-hide');
-      // Stop the intro ball's rAF + dispose WebGL resources up front
-      // so we don't waste GPU during the fade-out.
-      if (disposeIntroBall) { disposeIntroBall(); disposeIntroBall = null; }
-      // Remove from layout once the fade finishes so it stops eating
-      // pointer events / breaking the WebGL canvas's interaction layer.
-      setTimeout(() => introEl?.remove(), 380);
+      if (pauseIntroBall) pauseIntroBall();
     }, { signal });
 
     /* Rebake ball textures once SharpGrotesk Medium has loaded. Canvas
