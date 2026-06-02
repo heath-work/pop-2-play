@@ -7,7 +7,7 @@ import * as THREE from 'three';
    badge sits in the top-right corner of the viewport so you can
    confirm at a glance that the iOS PWA cache has picked up the
    latest build. */
-const APP_VERSION = 'v14';
+const APP_VERSION = 'v15';
 
 /* ════════════════════════════════════════════════════════════════════
    3D LOTTO BALL TEXTURE — ported from the shakeit app.

@@ -113,6 +113,8 @@ body {
    darken shadows for that retro print / CRT feel without coloring
    the underlying content. opacity 0.12 keeps it subtle. */
 .noise-overlay {
+  /* Hidden for now — re-enable by switching back to display:block. */
+  display: none;
   position: fixed;
   inset: 0;
   z-index: 9998;             /* below the build badge (9999), above all else */
@@ -851,13 +853,16 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 .intro-drag-surface.dragging { cursor: grabbing; }
-/* .intro-bubble is now a direct child of #intro (sibling of the
-   hero), positioned absolutely so it overlaps the .intro-bubble-wrap
-   (which holds the 3D ball canvas underneath). Sized to match the
-   wrap (min(64vw, 260px)) and anchored to the same top offset the
-   hero uses (16px below #intro's top padding of 24px → effective
-   ~40px). Screen blend drops the PNG's dark bg out against the
-   pink-purple radial gradient behind it. */
+/* .intro-bubble is a direct child of #intro (sibling of the hero),
+   positioned absolutely so it overlaps the .intro-bubble-wrap
+   (which holds the 3D ball canvas underneath).
+
+   `mix-blend-mode: lighten` (per-channel max) instead of screen:
+   screen ALWAYS lightens the backdrop (even the bubble's mid-grey
+   pixels brighten the ball below, washing the pink out). lighten
+   only takes effect where the bubble pixel is brighter than the
+   ball — i.e. only the bubble's white highlights and rim shine
+   read through, the ball's body colour stays at its hex. */
 .intro-bubble {
   position: absolute;
   top: 40px;
@@ -867,7 +872,7 @@ body {
   aspect-ratio: 1 / 1;
   display: block;
   z-index: 2;
-  mix-blend-mode: screen;
+  mix-blend-mode: lighten;
   filter: drop-shadow(0 0 22px rgba(255, 255, 255, 0.55));
   animation: intro-bubble-glow 3.2s ease-in-out infinite;
   pointer-events: none;
