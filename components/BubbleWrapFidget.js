@@ -244,87 +244,48 @@ export default function BubbleWrapFidget() {
 
     if (!stage || !bubblesEl) return;
 
-    /* ── Audio (Web Audio buffer + <audio> pool fallback) ──────── */
-    // .mp3 over .wav — iOS Safari handles MP3 most reliably, the
-    // WAV decode path has been the suspect for the missing sound.
-    const POP_SRC = '/bubble-pop.mp3';
-    const POP_POOL_SIZE = 8;
-    // Master mute flag — flipped by the Audio toggles. Default ON so
-    // the game has sound out of the box.
+    /* ── Audio (synthesised — Web Audio only, no asset files) ────
+       The pop sound is a short downward-swept sine + percussive
+       envelope, generated fresh per pop via the AudioContext —
+       same pattern as playRowComplete / playSwoosh below. No file
+       fetch, no <audio> pool, no buffer decode — just oscillators
+       inside the running AC, which has been bulletproof on iOS. */
     let audioEnabled = true;
     let audioCtx = null;
-    let popBuffer = null;
-    let popBufferLoading = false;
-    const popPool = [];
-    let popPoolIdx = 0;
-    let popPoolUnlocked = false;
-    for (let i = 0; i < POP_POOL_SIZE; i++) {
-      const a = new Audio(POP_SRC);
-      a.preload = 'auto';
-      popPool.push(a);
-    }
     function ensureAudio() {
       if (!audioCtx) {
         const AC = window.AudioContext || window.webkitAudioContext;
         if (AC) {
-          try { audioCtx = new AC(); loadPopBuffer(); } catch (_) {}
+          try { audioCtx = new AC(); } catch (_) {}
         }
       }
       if (audioCtx && audioCtx.state === 'suspended') {
         audioCtx.resume().catch(() => {});
       }
-      if (!popPoolUnlocked) {
-        popPoolUnlocked = true;
-        for (const a of popPool) {
-          a.muted = true;
-          const p = a.play();
-          if (p && typeof p.then === 'function') {
-            p.then(() => { a.muted = false; }).catch(() => { a.muted = false; });
-          } else {
-            a.muted = false;
-          }
-        }
-      }
-    }
-    async function loadPopBuffer() {
-      if (popBufferLoading || popBuffer || !audioCtx) return;
-      if (location.protocol === 'file:') return;
-      popBufferLoading = true;
-      try {
-        const res = await fetch(POP_SRC);
-        const data = await res.arrayBuffer();
-        popBuffer = await new Promise((resolve, reject) =>
-          audioCtx.decodeAudioData(data, resolve, reject));
-      } catch (err) {
-        console.warn('[pop] Web Audio decode failed; using <audio> pool:', err);
-      } finally {
-        popBufferLoading = false;
-      }
     }
     function playPop(variation = 0) {
-      if (!audioEnabled) return;
-      if (audioCtx && popBuffer) {
-        try {
-          const src = audioCtx.createBufferSource();
-          src.buffer = popBuffer;
-          src.detune.value = variation * 30 + (Math.random() * 60 - 30);
-          const gain = audioCtx.createGain();
-          gain.gain.value = 0.85 + Math.random() * 0.15;
-          src.connect(gain).connect(audioCtx.destination);
-          src.start();
-          return;
-        } catch (_) {}
-      }
-      const a = popPool[popPoolIdx];
-      popPoolIdx = (popPoolIdx + 1) % POP_POOL_SIZE;
+      if (!audioEnabled || !audioCtx) return;
       try {
-        a.pause();
-        a.muted = false;
-        a.currentTime = 0;
-        a.playbackRate = 0.92 + (variation * 0.04) + Math.random() * 0.14;
-        a.volume = 0.85 + Math.random() * 0.15;
-        const p = a.play();
-        if (p && typeof p.catch === 'function') p.catch(() => {});
+        const now = audioCtx.currentTime;
+        // Pitch range per-pop: base ~520-720 Hz, plus a small offset
+        // from the "variation" parameter passed by the caller so
+        // adjacent bubbles vary musically.
+        const baseFreq = 540 + variation * 35 + Math.random() * 180;
+        // Sine oscillator with a fast downward pitch sweep — the
+        // hallmark "blip" of a bubble pop.
+        const osc = audioCtx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(baseFreq * 1.6, now);
+        osc.frequency.exponentialRampToValueAtTime(baseFreq * 0.45, now + 0.075);
+        // Percussive envelope: 5 ms attack, ~110 ms decay.
+        const gain = audioCtx.createGain();
+        gain.gain.setValueAtTime(0.0001, now);
+        gain.gain.exponentialRampToValueAtTime(
+          0.32 + Math.random() * 0.10, now + 0.005);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.13);
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start(now);
+        osc.stop(now + 0.16);
       } catch (_) {}
     }
     const ROW_COMPLETE_NOTE_FREQS    = [523.25, 659.25, 783.99];
