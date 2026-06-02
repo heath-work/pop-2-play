@@ -256,7 +256,11 @@ export default function BubbleWrapFidget() {
        Browser caches the .wav after the first fetch, so the
        fallback's per-pop Audio() construction is cheap. */
     const POP_SRC = '/bubble-pop.wav';
-    let audioEnabled = true;
+    // Audio defaults to OFF. The user explicitly opts in via the
+    // Audio toggle (intro or settings). That toggle click is the
+    // user gesture that creates / resumes the AudioContext, so iOS
+    // has no ambiguity about when audio playback is authorised.
+    let audioEnabled = false;
     let audioCtx = null;
     let popBuffer = null;
     let popBufferLoading = false;
@@ -1088,6 +1092,9 @@ export default function BubbleWrapFidget() {
     }, { signal });
     if (settingsAudioEl) settingsAudioEl.addEventListener('click', () => {
       audioEnabled = !audioEnabled;
+      // Same iOS-friendly activation: create / resume AC inside the
+      // gesture so subsequent BufferSource plays just work.
+      if (audioEnabled) ensureAudio();
       refreshSettingsLabels();
     }, { signal });
     if (settingsTiltEl) settingsTiltEl.addEventListener('click', () => {
@@ -1280,6 +1287,9 @@ export default function BubbleWrapFidget() {
     refreshIntroToggles();
     if (introAudioEl) introAudioEl.addEventListener('click', () => {
       audioEnabled = !audioEnabled;
+      // Create / resume the AudioContext inside the gesture so iOS
+      // gets the activation it requires for subsequent plays.
+      if (audioEnabled) ensureAudio();
       refreshIntroToggles();
       refreshSettingsLabels();
     }, { signal });
@@ -1392,7 +1402,7 @@ export default function BubbleWrapFidget() {
               className="intro-switch"
               id="introAudio"
               type="button"
-              aria-pressed="true"
+              aria-pressed="false"
               aria-label="Toggle audio"
             >
               <span className="intro-switch-off">Off</span>
