@@ -245,7 +245,9 @@ export default function BubbleWrapFidget() {
     if (!stage || !bubblesEl) return;
 
     /* ── Audio (Web Audio buffer + <audio> pool fallback) ──────── */
-    const POP_SRC = '/bubble-pop.wav';
+    // .mp3 over .wav — iOS Safari handles MP3 most reliably, the
+    // WAV decode path has been the suspect for the missing sound.
+    const POP_SRC = '/bubble-pop.mp3';
     const POP_POOL_SIZE = 8;
     // Master mute flag — flipped by the Audio toggles. Default ON so
     // the game has sound out of the box.
