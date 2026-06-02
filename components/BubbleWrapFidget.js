@@ -247,6 +247,9 @@ export default function BubbleWrapFidget() {
     /* ── Audio (Web Audio buffer + <audio> pool fallback) ──────── */
     const POP_SRC = '/bubble-pop.wav';
     const POP_POOL_SIZE = 8;
+    // Master audio mute flag — flipped from the Settings modal toggle.
+    // Every play* function early-returns when this is false.
+    let audioEnabled = true;
     let audioCtx = null;
     let popBuffer = null;
     let popBufferLoading = false;
@@ -297,6 +300,7 @@ export default function BubbleWrapFidget() {
       }
     }
     function playPop(variation = 0) {
+      if (!audioEnabled) return;
       if (audioCtx && popBuffer) {
         try {
           const src = audioCtx.createBufferSource();
@@ -327,7 +331,7 @@ export default function BubbleWrapFidget() {
     const ROW_COMPLETE_ATTACK        = 0.005;
     const ROW_COMPLETE_PEAK_GAIN     = 0.22;
     function playRowComplete() {
-      if (!audioCtx) return;
+      if (!audioEnabled || !audioCtx) return;
       try {
         const t0 = audioCtx.currentTime;
         ROW_COMPLETE_NOTE_FREQS.forEach((freq, i) => {
@@ -348,7 +352,7 @@ export default function BubbleWrapFidget() {
       } catch (_) {}
     }
     function playSwoosh() {
-      if (!audioCtx) return;
+      if (!audioEnabled || !audioCtx) return;
       try {
         const now = audioCtx.currentTime;
         const duration = 0.55;
@@ -1037,8 +1041,10 @@ export default function BubbleWrapFidget() {
     }
 
     /* ── Bottom controls ───────────────────────────────────────── */
-    // X — reset current row (un-pop selected bubbles and clear balls)
-    if (ctaExitEl) ctaExitEl.addEventListener('click', () => {
+    // Shared: un-pop the bubbles selected this row, clear the slot
+    // balls, and stop any in-flight fast-select cascade. Called from
+    // the Settings modal's Reset button.
+    function resetCurrentRow() {
       autoPlayQueue = 0;
       if (currentSelections.length === 0) {
         showToast('Nothing to reset.');
@@ -1055,8 +1061,80 @@ export default function BubbleWrapFidget() {
         }
       }
       currentSelections = [];
-      clearAllBalls(true);
+      clearAllBalls(false);
       refreshPill();
+    }
+
+    // The bottom-bar … button now opens the Settings modal instead of
+    // resetting directly. Reset moved to a button inside the modal.
+    const settingsBackdropEl = document.getElementById('settingsBackdrop');
+    const settingsAudioEl    = document.getElementById('settingsAudio');
+    const settingsTiltEl     = document.getElementById('settingsTilt');
+    const settingsResetEl    = document.getElementById('settingsReset');
+    const settingsSkipEl     = document.getElementById('settingsSkip');
+    const settingsExitEl     = document.getElementById('settingsExit');
+    const settingsHowToEl    = document.getElementById('settingsHowToPlay');
+    function refreshSettingsLabels() {
+      if (settingsAudioEl) {
+        settingsAudioEl.classList.toggle('is-off', !audioEnabled);
+        const s = settingsAudioEl.querySelector('.settings-toggle-state');
+        if (s) s.textContent = audioEnabled ? 'On' : 'Off';
+      }
+      if (settingsTiltEl) {
+        settingsTiltEl.classList.toggle('is-off', !tiltEnabled);
+        const s = settingsTiltEl.querySelector('.settings-toggle-state');
+        if (s) s.textContent = tiltEnabled ? 'On' : 'Off';
+      }
+    }
+    function openSettings() {
+      if (!settingsBackdropEl) return;
+      refreshSettingsLabels();
+      settingsBackdropEl.classList.add('visible');
+    }
+    function closeSettings() {
+      settingsBackdropEl?.classList.remove('visible');
+    }
+    if (ctaExitEl) ctaExitEl.addEventListener('click', openSettings, { signal });
+    if (settingsBackdropEl) settingsBackdropEl.addEventListener('click', (e) => {
+      // Click on the backdrop (outside the modal panel) closes.
+      if (e.target === settingsBackdropEl) closeSettings();
+    }, { signal });
+    if (settingsResetEl) settingsResetEl.addEventListener('click', () => {
+      resetCurrentRow();
+      closeSettings();
+    }, { signal });
+    if (settingsAudioEl) settingsAudioEl.addEventListener('click', () => {
+      audioEnabled = !audioEnabled;
+      refreshSettingsLabels();
+    }, { signal });
+    if (settingsTiltEl) settingsTiltEl.addEventListener('click', () => {
+      if (tiltEnabled) {
+        // Disable: detach listener, snap rotation back to flat.
+        window.removeEventListener('deviceorientation', onTilt);
+        tiltEnabled = false;
+        tiltNeutral = null;
+        sheetTiltEl?.style.setProperty('--tilt-x', '0deg');
+        sheetTiltEl?.style.setProperty('--tilt-y', '0deg');
+      } else {
+        // Re-enable. The toggle click is itself a user gesture, so
+        // we can call requestPermission synchronously here on iOS.
+        enableTiltOnGesture();
+      }
+      refreshSettingsLabels();
+    }, { signal });
+    if (settingsSkipEl) settingsSkipEl.addEventListener('click', () => {
+      ensureAudio();
+      autoFillCurrentRow();
+      closeSettings();
+    }, { signal });
+    if (settingsExitEl) settingsExitEl.addEventListener('click', () => {
+      // No real "exit" on web — close the modal. Hook for native
+      // PWA shell to close the window later.
+      closeSettings();
+    }, { signal });
+    if (settingsHowToEl) settingsHowToEl.addEventListener('click', () => {
+      // Placeholder — How-to-play panel TBD.
+      closeSettings();
     }, { signal });
 
     // Pill (>> ) — auto-pops enough bubbles to complete the current row
@@ -1322,13 +1400,13 @@ export default function BubbleWrapFidget() {
           so the dark plate visually starts BELOW the slot row. */}
       <div className="tray-foot">
         <div className="tray-ctas">
-          {/* Three-dot menu (formerly the X reset). Tapping resets the
-              currently-building row — same behaviour as before, new icon. */}
+          {/* Three-dot menu — opens the Settings modal (How to play,
+              Reset, Audio toggle, Tilt toggle, Skip, Exit). */}
           <button
             className="ctl ctl-round ctl-glass"
             id="ctaExit"
             type="button"
-            aria-label="Reset row"
+            aria-label="Open settings"
           >
             <svg viewBox="0 0 20 20" aria-hidden="true">
               <circle cx="4"  cy="10" r="1.6" fill="currentColor" />
@@ -1396,6 +1474,34 @@ export default function BubbleWrapFidget() {
           bubble's screen position (up in the stage area) down to its
           slot in the tray, all in one continuous Three.js scene. */}
       <canvas className="ball-overlay" id="ballOverlay" />
+
+      {/* Settings modal — opened by the bottom-bar … button. Glass
+          panel over a dark-blue blurred overlay; clicking the
+          backdrop or any action closes it. */}
+      <div className="settings-backdrop" id="settingsBackdrop" aria-hidden="true">
+        <div className="settings-modal" role="dialog" aria-label="Settings">
+          <button className="settings-btn" id="settingsHowToPlay" type="button">
+            How to Play
+          </button>
+          <button className="settings-btn" id="settingsReset" type="button">
+            Reset
+          </button>
+          <button className="settings-btn settings-toggle" id="settingsAudio" type="button">
+            <span>Audio</span>
+            <span className="settings-toggle-state">On</span>
+          </button>
+          <button className="settings-btn settings-toggle" id="settingsTilt" type="button">
+            <span>Tilt</span>
+            <span className="settings-toggle-state">On</span>
+          </button>
+          <button className="settings-btn" id="settingsSkip" type="button">
+            Skip
+          </button>
+          <button className="settings-btn settings-btn-exit" id="settingsExit" type="button">
+            Exit Game
+          </button>
+        </div>
+      </div>
     </>
   );
 }

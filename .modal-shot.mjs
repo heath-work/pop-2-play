@@ -1,0 +1,10 @@
+import puppeteer from 'puppeteer';
+const browser = await puppeteer.launch({ headless: true });
+const page = await browser.newPage();
+await page.setViewport({ width: 430, height: 932, deviceScaleFactor: 2 });
+await page.goto('http://localhost:3001/', { waitUntil: 'networkidle0' });
+await new Promise(r => setTimeout(r, 800));
+await page.click('#ctaExit');
+await new Promise(r => setTimeout(r, 400));
+await page.screenshot({ path: '/tmp/p2p-shots/v37-modal.png' });
+await browser.close();

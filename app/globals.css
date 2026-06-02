@@ -584,7 +584,11 @@ body {
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  /* Keep "Fast select" on a single line — at narrow viewports the
+     flex-grow column could otherwise force a wrap. */
+  white-space: nowrap;
 }
+.ctl-fast-select span { white-space: nowrap; }
 .ctl-fast-icon { width: 18px; height: 18px; }
 
 /* Legacy CTA buttons (cta-reset, cta-randomise, cta-help, cta-primary)
@@ -629,7 +633,91 @@ body {
 /* ── Lotto-man celebration: hidden in this redesign ───────────── */
 .lotto-man-arc { display: none; }
 
-/* ── Modal — hidden in this redesign (kept in DOM for state safety) */
+/* ── Settings modal — glass panel over a dark-blue blurred overlay,
+   opened by the bottom-bar ellipsis button. */
+.settings-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 8, 60, 0.6);
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  padding: 24px;
+  /* Fade-in for the backdrop itself. */
+  opacity: 0;
+  transition: opacity 220ms ease-out;
+}
+.settings-backdrop.visible {
+  display: flex;
+  opacity: 1;
+}
+.settings-modal {
+  width: 100%;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: rgba(18, 18, 60, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  border-radius: 22px;
+  padding: 18px;
+  box-shadow:
+    0 24px 60px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  /* Subtle pop-in for the panel — sits 10px lower at start. */
+  transform: translateY(10px);
+  transition: transform 240ms cubic-bezier(.2, 1, .35, 1);
+}
+.settings-backdrop.visible .settings-modal {
+  transform: translateY(0);
+}
+.settings-btn {
+  /* Fully rounded (pill) buttons with a 2px white border. Vertical
+     padding 6 px lets the row height collapse around its glyph instead
+     of being pinned to a fixed height. */
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 2px solid #ffffff;
+  color: #fff;
+  font-family: 'SharpGrotesk', var(--ctl-font);
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  padding: 6px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 180ms ease, transform 120ms ease;
+}
+.settings-btn:hover { background: rgba(255, 255, 255, 0.10); }
+.settings-btn:active { transform: translateY(1px); }
+.settings-toggle { justify-content: space-between; }
+.settings-toggle .settings-toggle-state {
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: rgba(140, 220, 255, 0.95);
+  text-transform: uppercase;
+  font-size: 12px;
+}
+.settings-toggle.is-off .settings-toggle-state {
+  color: rgba(255, 255, 255, 0.45);
+}
+.settings-btn-exit {
+  background: rgba(255, 80, 110, 0.16);
+  /* Exit keeps the red treatment — not the white 2 px border. */
+  border: 2px solid rgba(255, 80, 110, 0.45);
+  color: #ff9aaa;
+}
+.settings-btn-exit:hover { background: rgba(255, 80, 110, 0.22); }
+
+/* Legacy modal kept hidden so any leftover JS that touches its
+   selectors doesn't blow up. */
 .modal-backdrop { display: none !important; }
 
 /* ── Intro overlay — hidden in this redesign ─────────────────── */
