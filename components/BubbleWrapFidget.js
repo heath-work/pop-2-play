@@ -794,8 +794,16 @@ export default function BubbleWrapFidget() {
           mesh.position.y = startY + (targetY - startY) * yProg;
           mesh.position.z = 0;
           mesh.scale.setScalar(ballScene.ballRadius);
-          const tumble = -SPIN_REVOLUTIONS * Math.PI * 2 * (1 - eased);
-          mesh.rotation.set(FINAL_ROT_X + tumble, FINAL_ROT_Y, 0);
+          // Tumble on all three axes by the per-ball random spin
+          // counts; each axis interpolates its accumulated revolutions
+          // toward 0 as the ball settles, so the final pose always
+          // lands on FINAL_ROT_X/Y/Z.
+          const spinPhase = (1 - eased) * Math.PI * 2;
+          mesh.rotation.set(
+            FINAL_ROT_X + anim.spinX * spinPhase,
+            FINAL_ROT_Y + anim.spinY * spinPhase,
+            0           + anim.spinZ * spinPhase,
+          );
           mesh.visible = true;
           if (t >= 1) {
             mesh.position.set(targetX, targetY, 0);
@@ -856,12 +864,23 @@ export default function BubbleWrapFidget() {
       // bubble's screen position.
       const slot = ballScene.slotCenters[slotIdx];
       const fallbackY = slot ? Math.max(0, slot.y - ballScene.ballRadius * 4) : 0;
+      // Per-ball random spin axes — each ball tumbles on all three
+       // axes with a random number of revolutions and direction. The
+       // rotation interpolates these spins from their initial value
+       // toward 0 as the ball settles, so they always land in the
+       // same final pose (FINAL_ROT_X/Y/Z = 0) regardless of how
+       // many random revs they accumulated during the fall.
+      const spinSign = () => (Math.random() < 0.5 ? -1 : 1);
+      const spinX = SPIN_REVOLUTIONS * (0.8 + Math.random() * 0.6) * spinSign();
+      const spinY = SPIN_REVOLUTIONS * (0.4 + Math.random() * 0.8) * spinSign();
+      const spinZ = SPIN_REVOLUTIONS * (0.2 + Math.random() * 0.4) * spinSign();
       ballScene.animations.push({
         kind: 'drop-in',
         slotIdx,
         number,
         sourceX: Number.isFinite(sourceX) ? sourceX : (slot ? slot.x : 0),
         sourceY: Number.isFinite(sourceY) ? sourceY : fallbackY,
+        spinX, spinY, spinZ,
         start: performance.now(),
         duration: Number.isFinite(duration) ? duration : SPIN_DURATION_MS,
       });
