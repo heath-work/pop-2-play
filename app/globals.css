@@ -5,38 +5,57 @@
   font-style: normal;
   font-display: swap;
 }
-:root {
-  --pink: #ffcbd9;
-  --pink-2: #ffb6c9;
-  --sheet: #73a9f2;            /* the colour of the bubble-wrap sheet */
-  --blue: #73a9f2;
-  --blue-2: #5d92e0;
-  --blue-dark: #4880c8;
-  --indigo: #25239c;
-
-  /* Tray palette — dark-indigo panel with chunky purple pixel frame */
-  --tray-bg: #1c1c5b;
-  --tray-bg-2: #14143f;
-  --panel-fill: rgba(46, 66, 176, 0.45);
-  --purple: #6b49d8;
-  --purple-light: #c98ff6;
-  --cyan-pale: #ecf9ff;
-  --indigo-text: #060b4f;
-
-  /* PLAY TICKET green */
-  --green: #2da55a;
-  --green-hi: #5fd584;
-  --green-lo: #15663a;
-  --green-shadow: #0a3a20;
-
-  --pixel-font: 'Press Start 2P', ui-monospace, Menlo, monospace;
-  --ui-font: 'Larsseit', 'Press Start 2P', ui-monospace, Menlo, monospace;
+@font-face {
+  font-family: 'SharpGrotesk';
+  src: url('/SharpGrotesk-Medium20.otf') format('opentype');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
 }
+
+:root {
+  /* ── Realistic redesign palette: pink-purple top → deep purple bot.
+     The bubble PNGs are rendered against a black bg, with mid-grey
+     glass interiors and bright top highlights. The bubbles are then
+     drawn with `mix-blend-mode: screen`, which brightens the backdrop
+     by the bubble's luminance. So the brighter the backdrop, the
+     brighter the bubble interior reads — these values were tuned so
+     the resulting bubbles match the realistic translucent look in the
+     design mockup (bubbles slightly lighter than bg, with crisp
+     white highlights). */
+  --bg-top:        #6a3aa8;        /* pink-purple, behind status bar */
+  --bg-mid:        #5a2f9c;        /* mid */
+  --bg-bot:        #3d1880;        /* deepest purple, near tray */
+  --status-bg:     #0b0a26;
+  --sheet:         #5a2f9c;
+  --tray-bg:       #2a0f5e;
+  --tray-bg-2:     #1a0840;
+  --tray-rim:      rgba(170, 120, 255, 0.55);
+  --ring-border:   rgba(170, 120, 255, 0.65);
+  --ring-fill:     rgba(40, 18, 90, 0.55);
+  --pill-bg:       rgba(20, 8, 50, 0.55);
+  --pill-fg:       rgba(255, 255, 255, 0.88);
+  --ctrl-fg:       rgba(255, 255, 255, 0.85);
+
+  /* Legacy / modal palette kept so older rules still render coherently */
+  --purple:        #8a5cff;
+  --purple-light:  #c98ff6;
+  --cyan-pale:     #ecf9ff;
+  --indigo-text:   #1a0a3d;
+
+  --ui-font: 'Larsseit', 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  /* Sharp Grotesk Medium is the canonical typeface for the new bottom-bar
+     controls and the on-ball numbers — drop-in for any label that
+     should read as the redesigned UI font (not the older Larsseit). */
+  --ctl-font: 'SharpGrotesk', 'Larsseit', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --pixel-font: 'Press Start 2P', ui-monospace, Menlo, monospace;
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
 html, body {
   height: 100%;
-  background: var(--sheet);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  background: var(--bg-bot);
+  font-family: var(--ui-font);
   color: #fff;
   overscroll-behavior: none;
   -webkit-user-select: none;
@@ -52,152 +71,124 @@ body {
   min-height: 100dvh;
   position: relative;
   overflow: hidden;
+  /* app_BG.png is the cosmic backdrop — dark starfield up top fading
+     to deep purple at the bottom. The stage paints on top transparent
+     so the BG bleeds through. */
+  background: #000 url('/app_BG.png') top center / cover no-repeat;
 }
+
+/* ── Stage / status ───────────────────────────────────────────── */
 .stage {
   flex: 1;
-  background: var(--sheet);
   position: relative;
   overflow: hidden;
   min-height: 400px;
-  /* Establish a local stacking context so .lotto-man-arc (inside this
-     element) can sit between the stage bg and the bubble grid via
-     z-index. The tray (z:3 at body level) still paints over the whole
-     stage stacking context. */
   z-index: 1;
+  /* isolation: isolate keeps the bubble imgs' mix-blend-mode reading
+     the stage's own painted backdrop (the body's app_BG.png shows
+     through this transparent stage). */
+  isolation: isolate;
+  background: transparent;
 }
-/* Status-bar safe area sits on top of the bubble field */
+
+/* Status-bar safe area — opaque navy strip across the iOS notch area
+   so signal/clock icons read against it instead of the bubble grid. */
 .status-spacer {
   position: absolute;
   top: 0; left: 0; right: 0;
   height: calc(44px + env(safe-area-inset-top, 0px));
+  background: var(--status-bg);
   pointer-events: none;
   z-index: 5;
 }
+
+/* ── Bubble grid ──────────────────────────────────────────────── */
+/* Layering (document order, no z-index inside .stage — anything that
+   creates a new stacking context here would trap the bubble imgs'
+   mix-blend-mode and the screen blend would have nothing but
+   transparent backdrop to read against):
+   1. #bubbleFrame — translucent plastic holder PNG with alpha-cutout
+      bubble holes, stretched to fit the stage area so its holes line
+      up with the JS-computed bubble grid (same COLS).
+   2. #bubbles — transparent container; bubble buttons use
+      mix-blend-mode: screen to composite the dark glassy PNG against
+      the body's app_BG.png starfield. */
 #bubbles {
   position: absolute;
   inset: 0;
-  /* Above .lotto-man-arc (z:0) inside the stage stacking context so the
-     translucent bubble PNGs overlay him as he passes under the grid. */
-  z-index: 1;
+  background: transparent;
 }
-
-/* ---------- Pixel-art clouds drifting behind the bubble wrap ---------- */
-#cloudLayer {
-  display: none;
+/* Frame is a fixed 362×548 plate centred horizontally in the stage,
+   sitting 52 px below the stage top so the status bar's safe area
+   stays clear above it. computeLayout() in the JS uses the same
+   FRAME_TOP / FRAME_W constants so the bubble holes the PNG draws
+   line up exactly with the JS-positioned bubble buttons. */
+#bubbleFrame {
   position: absolute;
-  inset: 0;
+  top: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 362px;
+  height: 548px;
+  background: url('/bubble-frame.png') top center / 100% 100% no-repeat;
   pointer-events: none;
-  overflow: hidden;
 }
-.cloud {
-  position: absolute;
-  left: 0;
-  image-rendering: pixelated;
-  image-rendering: -moz-crisp-edges;
-  image-rendering: crisp-edges;
-  opacity: 0.7;
-  will-change: transform;
-}
-/* Travel range deliberately wider than the 430px max-width body so the
-   cloud is fully off-screen at both ends regardless of orientation. */
-@keyframes cloud-drift {
-  0%   { transform: translateX(520px); }
-  100% { transform: translateX(-520px); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .cloud { animation: none; }
-}
+#cloudLayer { display: none; }
 
-/* ---------- Pixel-art bubble (uses author-supplied PNGs) ---------- */
 .bubble {
   position: absolute;
-  background: none;
   border: none;
   padding: 0;
   cursor: pointer;
   display: block;
-  transform: translateZ(0);
-  will-change: transform, opacity;
+  will-change: opacity;
+  /* The bubble PNG is rendered as a background-image on the button
+     itself (not as a child <img>) because mix-blend-mode applied to a
+     replaced element inside a positioned parent doesn't reliably read
+     the parent's backdrop in Chromium — Chromium treats <img> as its
+     own painting layer and the screen blend ends up compositing
+     against transparent black instead of the stage gradient. With the
+     PNG as a background on the button, the blend reads the stage
+     gradient correctly and the bubble glass appears translucent. */
+  background: center / 100% 100% no-repeat url('/bubble-static.png');
+  background-color: transparent;
+  mix-blend-mode: screen;
 }
-.bubble img {
-  width: 100%;
-  height: 100%;
-  display: block;
-  image-rendering: pixelated;
-  image-rendering: -moz-crisp-edges;
-  image-rendering: crisp-edges;
-  pointer-events: none;
-  user-select: none;
-  -webkit-user-drag: none;
+/* Popped bubble: mix-blend-mode: screen, with a brightness pre-pass
+   so the screen has something to actually brighten. The frame PNG has
+   alpha-cutouts for each bubble well, which means the *backdrop*
+   directly under each bubble centre is the dark body bg (≈ rgb 2-20)
+   not the translucent grey of the frame plate. Screen on dark PNG +
+   dark backdrop ≈ stays dark, so the deflated crinkle reads almost
+   black. brightness(2.4) lifts the PNG's dark greys into the mid
+   range BEFORE the blend, so the screen result is a visibly lighter
+   crinkled bubble against the dark hole — the "screen effect" the
+   design calls for. */
+.bubble.popped {
+  background-image: url('/bubble-popped.png');
+  mix-blend-mode: screen;
+  filter: brightness(2.4);
+  opacity: 0.4;
 }
-.bubble .num {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--pixel-font);
-  color: #fff;
-  pointer-events: none;
-  -webkit-font-smoothing: none;
-  -moz-osx-font-smoothing: none;
-  font-smooth: never;
-  text-rendering: geometricPrecision;
-  letter-spacing: -0.02em;
-  text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.55);
-}
+.bubble img { display: none; }
+.bubble .num { display: none; } /* No numbers on bubbles in this redesign */
 
 .bubble.popping {
   animation: pop 320ms steps(5, end) forwards;
   pointer-events: none;
 }
 .bubble.popped { pointer-events: none; }
-.bubble.popped .num {
-  color: rgba(255, 255, 255, 0.55);
-  text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.3);
-}
-
-/* ---------- Bubble-wrap sheet edges (top & bottom strips) ---------- */
-.sheet-edge {
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 14px;
-  background-repeat: repeat-x;
-  background-size: auto 100%;
-  image-rendering: pixelated;
-  image-rendering: -moz-crisp-edges;
-  image-rendering: crisp-edges;
-  pointer-events: none;
-  z-index: 2;
-  /* top/bottom values set inline at render time — pinned to bubble grid edges */
-}
-.sheet-edge-top    { background-image: url('/bubble-wrap-top.png'); }
-.sheet-edge-bottom { background-image: url('/bubble-wrap-bottom.png'); }
 @keyframes pop {
   0%   { transform: scale(1);    opacity: 1; }
-  35%  { transform: scale(1.15); opacity: 1; }
+  35%  { transform: scale(1.12); opacity: 1; }
   100% { transform: scale(1);    opacity: 1; }
 }
 
-/* Pop burst — concentric pixel rings expanding outward, dissolving as they go */
-.burst {
-  position: absolute;
-  pointer-events: none;
-  image-rendering: pixelated;
-  image-rendering: crisp-edges;
-  animation: burst 480ms steps(7, end) forwards;
-  transform-origin: center;
-}
-@keyframes burst {
-  0%   { transform: scale(0.35); opacity: 1; }
-  30%  { transform: scale(1.0);  opacity: 0.85; }
-  60%  { transform: scale(1.5);  opacity: 0.5; }
-  85%  { transform: scale(1.85); opacity: 0.2; }
-  100% { transform: scale(2.1);  opacity: 0; }
-}
+/* Sheet edges (top/bottom strip) — hidden in this redesign; the
+   connector tile + status bar handle the visual break. */
+.sheet-edge { display: none; }
 
-/* Sheet refill — entire bubble grid slides in from the left */
+/* Sheet refill — slide whole grid in from left */
 #bubbles.slide-in {
   animation: bubbles-slide-in 520ms cubic-bezier(.2, .85, .3, 1);
 }
@@ -206,401 +197,303 @@ body {
   100% { transform: translateX(0); }
 }
 
-/* ---------- Randomise — hidden in this design (kept in JS for now) ---------- */
-.randomise {
-  display: none;
+/* Pop burst — soft expanding white halo */
+.burst {
   position: absolute;
-  transform: translate(-50%, -50%);
-  background: #2368c0;
-  color: #fff;
-  border: none;
-  height: 40px;
-  padding: 0 16px;
-  font-family: var(--pixel-font);
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  cursor: pointer;
-  z-index: 4;
-  /* chunky pixel bevel via stacked box-shadows */
-  box-shadow:
-    inset 0 2px 0 0 #5aa0f0,     /* top inner highlight */
-    inset 0 -2px 0 0 #14457e,    /* bottom inner shadow */
-    inset 2px 0 0 0 #3a82d8,
-    inset -2px 0 0 0 #174b8a,
-    0 2px 0 0 #0e3466,           /* bottom drop */
-    0 4px 0 0 rgba(0, 0, 0, 0.28);
-  image-rendering: pixelated;
+  pointer-events: none;
+  animation: burst 480ms cubic-bezier(.2, .8, .3, 1) forwards;
+  transform-origin: center;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255,255,255,0.7) 0%, rgba(255,255,255,0.0) 60%);
+  mix-blend-mode: screen;
 }
-.randomise:active {
-  transform: translate(-50%, calc(-50% + 2px));
-  box-shadow:
-    inset 0 2px 0 0 #5aa0f0,
-    inset 0 -2px 0 0 #14457e,
-    inset 2px 0 0 0 #3a82d8,
-    inset -2px 0 0 0 #174b8a,
-    0 0 0 0 #0e3466,
-    0 2px 0 0 rgba(0, 0, 0, 0.28);
+@keyframes burst {
+  0%   { transform: scale(0.4); opacity: 0.9; }
+  100% { transform: scale(2.0); opacity: 0;  }
 }
 
-/* ---------- Tray ----------
-   Dark indigo panel with a doubled purple pixel-art frame and chunky
-   stair-step corners. */
-/* Tray panel chrome: thin highlight stripe pinned at the top, body fill
-   tiled vertically beneath. Both layers stretch horizontally to 100% so
-   the side-edge highlights baked into the fill stay anchored to the
-   panel edges. Pixelated rendering keeps the pixel-art crisp at any
-   fractional scale; border-radius + overflow:hidden gives clean rounded
-   corners that clip the backgrounds. */
+/* Hidden — legacy randomise button (lives in JS but visually gone) */
+.randomise { display: none; }
+
+/* ── Tray ─────────────────────────────────────────────────────── */
 .tray {
+  /* footer_bg.png is a tall dark navy plate with a soft arc at the top
+     (the "shadow" cast by the bubble holder above). Stretched to 100%
+     across so its arc tracks the tray width regardless of viewport. */
   background:
-    url('/img/ui-panel-top.png')  top center / 100% 9px  no-repeat,
-    url('/img/ui-panel-fill.png') top center / 100% 77px repeat-y;
-  background-color: var(--tray-bg);
-  image-rendering: pixelated;
-  padding: 12px 16px calc(10px + env(safe-area-inset-bottom, 0px));
+    url('/footer_bg.png') top center / 100% 100% no-repeat,
+    #000a30;
+  /* 56px top padding reserves room for the ghost row + its fading
+     gradient overlay (both absolutely positioned), so the in-flow
+     labels and slot row sit below them. */
+  padding: 56px 16px calc(14px + env(safe-area-inset-bottom, 0px));
   flex-shrink: 0;
   position: relative;
-  border-radius: 12px;
-  overflow: hidden;
-  /* Above the game-message banner so the panel occludes it during
-     ingress/egress; the banner sits at z-index: 2. */
   z-index: 3;
-  /* Smooth padding shrink on collapse alongside child max-height. */
-  transition: padding-top 300ms ease, padding-bottom 300ms ease;
+  border-top: none;
 }
 
-/* Collapsed state: only .tray-head's NE-arrow stays visible. The
-   collapsible children animate max-height + opacity to 0. The tray's
-   intrinsic height shrinks and .stage's flex:1 grows into the freed
-   space; bubble grid is relayed out by the JS click handler 320ms
-   later so the new rows fill the new available height. */
+/* The old tray-head / progress / page-num is no longer the primary
+   navigation surface — collapse all of it out of layout. */
+.tray-head,
+.tray-label,
 .tray-page-num,
-.tray-row-wrapper,
-.tray-ctas {
-  overflow: hidden;
-  max-height: 240px;
-  transition: max-height 300ms ease,
-              opacity   300ms ease,
-              margin    300ms ease;
-}
-.tray.is-collapsed .tray-page-num,
-.tray.is-collapsed .tray-row-wrapper,
-.tray.is-collapsed .tray-ctas {
-  max-height: 0;
-  opacity: 0;
-  margin-top: 0;
-  margin-bottom: 0;
-}
-/* Page-num lives inside .tray-head's grid; pull it fully out of layout
-   when collapsed so the progress bar can stretch to fill the row. */
-.tray.is-collapsed .tray-page-num {
-  display: none;
-}
-.tray.is-collapsed {
-  /* 16px top to mirror the panel's existing 16px horizontal padding —
-     the NE icon now has equal space above it and to its left. */
-  padding-top: 16px;
-  padding-bottom: calc(6px + env(safe-area-inset-bottom, 0px));
-}
-.tray.is-collapsed .tray-head {
-  /* Two columns instead of three (page-num is display:none) so the
-     progress bar takes the full remaining row beside the NE button. */
-  grid-template-columns: 33px 1fr;
-  margin-bottom: 0;
-  transition: margin 300ms ease;
-}
+.tray-progress { display: none; }
 
-.tray-head {
-  display: grid;
-  grid-template-columns: 33px 1fr auto;
-  align-items: center;
-  gap: 12px;
-  color: var(--cyan-pale);
-  font-family: var(--ui-font);
-  font-size: 14px;
-  letter-spacing: 0.06em;
-  margin-bottom: 6px;
-}
-/* Icon lives on ::before so the button's :active translate transform
-   doesn't fight the icon's scaleY flip transform when toggling
-   expand/collapse. */
-.tray-modal-btn {
-  background: transparent;
-  border: none;
-  width: 33px;
-  height: 33px;
-  cursor: pointer;
-  padding: 0;
+/* ── Tray balls strip ─────────────────────────────────────────── */
+/* Single-column wrapper for the row of ring holders + the WebGL canvas
+   that paints 3D balls over them. The previous arrow column was
+   removed; the balls now soak up the full row width. */
+.tray-balls {
   position: relative;
 }
-.tray-modal-btn::before {
-  content: '';
+/* Rings derive their height from their width via aspect-ratio so they
+   read as true circles, not eggs. Container height stays in-sync via
+   the grid auto-fit. resizeBallScene() reads tray-rings' bbox each
+   resize, so the canvas + ball radii follow. */
+.tray-rings {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 5px;
+}
+.ring {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 50%;
+  background: var(--ring-fill);
+  border: 2px solid var(--ring-border);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
+  position: relative;
+}
+.ring { position: relative; z-index: 1; }
+
+/* Full-body WebGL overlay — balls render here so they can animate from
+   a bubble's screen position (anywhere in the stage area) down to its
+   slot in the tray as a single continuous motion. pointer-events:none
+   keeps the bubble buttons underneath clickable. z-index sits above
+   tray (z:3) and the bubble frame so spheres always render on top. */
+.ball-overlay {
   position: absolute;
   inset: 0;
-  background: url('/img/expand.png') center/contain no-repeat;
-  image-rendering: pixelated;
-  /* Default (panel expanded) shows the arrow vertically flipped — the
-     icon now points down-and-out, signalling 'click to collapse'. */
-  transform: scaleY(-1);
-  transition: transform 300ms ease;
+  /* canvas is a replaced element — its intrinsic width/height (the
+     drawing-buffer attribute values) wins over `inset: 0` unless we
+     explicitly set CSS width/height. Without these, Three.js's
+     default 1200×600 buffer leaks through and the canvas renders at
+     the wrong size with all ball positions off-screen. */
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  display: block;
+  z-index: 40;
 }
-.tray.is-collapsed .tray-modal-btn::before {
-  /* Original NE-arrow orientation when collapsed — 'click to expand'. */
-  transform: scaleY(1);
-}
-.tray-modal-btn:active { transform: translateY(1px); }
-.tray-progress {
-  height: 12px;
-  background:
-    url('/img/progress-bar_start.png') left center/6px 12px no-repeat,
-    url('/img/progress-bar_end.png') right center/6px 12px no-repeat,
-    url('/img/progress-bar_middle.png') center/calc(100% - 12px) 12px no-repeat;
-  border: none;
-  overflow: visible;
-  position: relative;
-  image-rendering: pixelated;
-}
-.tray-progress-bar {
+
+/* Ghost row — last completed game's numbers, sitting just above the
+   active slot row at a reduced opacity, with a dark gradient above
+   them that simulates them disappearing back into the bubble frame's
+   shadow. The .tray-ghost-row is the slot-aligned strip that holds
+   8 absolutely-positioned <span>s (one per ball), painted in CSS
+   (not WebGL) so the ghosts persist cheaply between games. */
+.tray-ghost-row {
   position: absolute;
-  top: 3px;
-  left: 3px;
-  height: 6px;
-  width: 0;
-  background: url('/img/progress-bar_fill.png') left center/auto 6px repeat-x;
-  transition: width 220ms cubic-bezier(.25, 1.1, .4, 1);
-  image-rendering: pixelated;
-  max-width: calc(100% - 6px);
-}
-.tray-page-num {
-  color: var(--cyan-pale);
-  font-family: var(--ui-font);
-  font-size: 16px;
-  letter-spacing: 0.04em;
-  opacity: 0.9;
-  min-width: 2.5em;
-  text-align: right;
-}
-.tray-label { display: none; }
-.tray-row-wrapper {
+  top: 8px;
+  left: 16px;
+  right: 16px;
+  height: 32px;
   display: grid;
-  grid-template-columns: 33px 1fr;
-  gap: 10px;
-  align-items: center;
-}
-.tray-nav {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.tray-arrow {
-  background-color: transparent;
-  background-position: center;
-  background-repeat: no-repeat;
-  background-size: 100% 100%;
-  border: none;
-  width: 33px;
-  height: 33px;
-  cursor: pointer;
-  padding: 0;
-  image-rendering: pixelated;
-}
-.tray-up   { background-image: url('/img/up.png'); }
-.tray-down { background-image: url('/img/down.png'); }
-.tray-arrow:active { transform: translateY(1px); }
-.tray-arrow:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
-.game-row {
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 0;
-  /* Swipe-up/down on this row navigates to previous/next game; the JS
-     handles direction itself, so block all browser-driven panning. */
-  touch-action: none;
-}
-.game-row.appear {
-  animation: row-in 320ms cubic-bezier(.25, 1.1, .4, 1);
-  transform-origin: center;
-}
-@keyframes row-in {
-  0%   { opacity: 0; transform: translateY(6px); }
-  100% { opacity: 1; transform: translateY(0); }
-}
-.game-row.row-out {
-  animation: row-slide-out 260ms cubic-bezier(.4, 0, .9, .4) forwards;
-}
-.game-row.row-slide-in {
-  animation: row-slide-in 340ms cubic-bezier(.25, 1.05, .4, 1);
-}
-@keyframes row-slide-out {
-  0%   { opacity: 1; transform: translateY(0); }
-  100% { opacity: 0; transform: translateY(-36px); }
-}
-@keyframes row-slide-in {
-  0%   { opacity: 0; transform: translateY(44px); }
-  100% { opacity: 1; transform: translateY(0); }
-}
-/* Ball-in-holder slot — image-based container with optional ball overlay. */
-.slot {
-  aspect-ratio: 55 / 99;
-  background: url('/img/ball-container_active.png') center/100% 100% no-repeat;
-  border: none;
-  color: var(--indigo-text);
-  font-family: var(--ui-font);
-  image-rendering: pixelated;
-  position: relative;
-  transition: transform 180ms ease;
-  margin-right: -3px;
-}
-.slot:last-child { margin-right: 0; }
-.slot.active-row {
-  background-image: url('/img/ball-container_empty.png');
-}
-.slot.filled.is-hot:after {
-  background-image: url('/img/ball-container_hot.png');
-  content: "";
-  display: block;
-  position: absolute;
-  bottom: 6px;
-  width: 36px;
-  height: 23px;
-  left: 6px;
-}
-.slot.filled.is-cold:after {
-  background-image: url('/img/ball-container_cold.png');
-  content: "";
-  display: block;
-  position: absolute;
-  bottom: 6px;
-  width: 36px;
-  height: 23px;
-  left: 6px;
-}
-.slot.filled.is-neutral:after {
-  background-image: url('/img/ball-container_neutral.png');
-  content: "";
-  display: block;
-  position: absolute;
-  bottom: 6px;
-  width: 36px;
-  height: 23px;
-  left: 6px;
-}
-.slot.filled::before {
-  content: '';
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 44px;
-  height: 40px;
-  background-image: var(--ball-img, url('/img/ball_purple.png'));
-  background-size: 100% 100%;
-  background-repeat: no-repeat;
-  image-rendering: pixelated;
-  animation: ball-pop-in 280ms cubic-bezier(.2, 1.6, .4, 1);
-  transform-origin: center;
-}
-@keyframes ball-pop-in {
-  0%   { transform: translate(-50%, -50%) scale(0.2); }
-  60%  { transform: translate(-50%, -50%) scale(1.15); }
-  100% { transform: translate(-50%, -50%) scale(1); }
-}
-.slot .num {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
+  grid-template-columns: repeat(8, 1fr);
+  gap: 5px;
+  pointer-events: none;
   z-index: 1;
-  line-height: 1;
-  font-size: 18px;
-  color: #060B4F;
+}
+.tray-ghost-row .ghost {
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--ctl-font);
+  font-weight: 500;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.9);
+  opacity: 0.55;
+  filter: blur(0.4px);
+}
+/* Linear gradient over the top half of the ghost row → fully opaque
+   at the very top (covers the ghosts where they meet the bubble
+   frame's bottom) fading to transparent below so the numbers stay
+   visible. Colours match the design reference's #000661 → #000380. */
+.tray-ghost-gradient {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 50px;
+  background: linear-gradient(180deg,
+    rgba(0, 6, 97, 1.00) 0%,
+    rgba(0, 3, 128, 0.00) 100%);
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* "YOUR NUMBERS | Game N/M | PB" label row sits over the gradient,
+   just above the active slot row. */
+.tray-labels {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  padding: 4px 16px 6px;
+  z-index: 3;
+}
+.tray-label {
+  display: block;
+  font-family: var(--ctl-font);
+  font-weight: 500;
+  font-size: 13px;
+  line-height: 1.2;
+  color: rgba(255, 255, 255, 0.95);
+  letter-spacing: 0.02em;
+}
+.tray-label-left  { text-align: left; }
+.tray-label-mid   { text-align: center; }
+.tray-label-right { text-align: right; }
+
+/* Old game-row grid is gone — keep an off-screen stub so the existing
+   JS that still touches visibleRowEl (entry animations, swipe handlers)
+   doesn't error. The actual visuals are the rings + canvas above. */
+#visibleRow {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
   pointer-events: none;
 }
-@keyframes pop-in {
-  0%   { transform: scale(0.2); }
-  60%  { transform: scale(1.15); }
-  100% { transform: scale(1); }
-}
+.slot { display: none; }
 
-/* ---------- Tray CTAs ---------- */
+/* ── Bottom control bar ───────────────────────────────────────── */
+/* Layout: 44px dots | ~120px count pill | flex Fast-select pill.
+   Pill widths are intrinsic via `auto`; the fast-select stretches with
+   1fr to soak up remaining width and matches the design's wide CTA. */
 .tray-ctas {
-  display: flex;
+  display: grid;
+  grid-template-columns: 44px auto 1fr;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
-  margin-top: 16px;
+  margin-top: 14px;
 }
-.cta {
-  font-family: var(--ui-font);
+.ctl {
   border: none;
-  cursor: pointer;
   background: transparent;
-  padding: 0;
-  image-rendering: pixelated;
-  position: relative;
-}
-.cta:active { transform: translateY(1px); }
-
-/* Square icon buttons (RESET + RANDOMISE). Visual comes from a PNG
-   background per modifier class — base rule just sizes the box. */
-.cta-icon {
-  width: 56px;
-  height: 56px;
-  flex-shrink: 0;
-  font-size: 0;
-}
-.cta-reset {
-  background: url('/img/btn-reset.png') center/contain no-repeat;
-}
-.cta-randomise {
-  background: url('/img/btn-random.png') center/contain no-repeat;
-}
-
-.cta-help {
-  width: 50px;
-  height: 50px;
-  background: url('/img/button_lucky-ball.png') center/contain no-repeat;
-  font-size: 0;
-  flex-shrink: 0;
-  mix-blend-mode: luminosity;
-}
-
-.cta-primary {
-  width: 156px;
-  height: 56px;
-  background: url('/img/CTA_play-ticket_static.png') center/contain no-repeat;
-  color: var(--indigo-text);
-  font-family: var(--ui-font);
-  font-size: 13px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+  color: var(--ctrl-fg);
+  font-family: var(--ctl-font);
+  cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding-left: 20px;
-  padding-bottom: 4px;
-  flex-shrink: 0;
+  transition: transform 120ms ease, background 200ms ease;
 }
-.cta-primary.is-disabled {
-  background-image: url('/img/CTA_play-ticket_disabled.png');
+.ctl:active { transform: translateY(1px); }
+.ctl:disabled { opacity: 0.35; cursor: default; }
+
+/* Glass treatment — translucent dark fill, faint white outline, slight
+   blur. Used by the round dots button and the count pill. */
+.ctl-glass {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
-.tray-ticks { display: none; }
+.ctl-round {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+}
+.ctl-round svg { width: 20px; height: 20px; color: rgba(255,255,255,0.75); }
 
-/* ---------- Toast ---------- */
+/* Count pill. The pill's white outline comes from .ctl-glass; the cyan
+   progress arc is an absolutely-positioned SVG that draws on top with
+   pathLength="100" so stroke-dashoffset == 100 - progress%. */
+.ctl-pill {
+  position: relative;
+  height: 44px;
+  min-width: 120px;
+  border-radius: 22px;
+  padding: 0 16px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: #fff;
+}
+.ctl-pill-count { line-height: 1; }
+.ctl-pill-chevrons {
+  width: 20px; height: 16px;
+  color: rgba(255, 255, 255, 0.85);
+}
+.ctl-pill-progress {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+.ctl-pill-progress rect {
+  fill: none;
+  stroke: url(#cta-pill-grad);   /* defined inline as a fallback solid stroke below */
+  stroke: #5ee2ff;                /* solid cyan if gradient unsupported */
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: stroke-dashoffset 220ms cubic-bezier(.25, 1.05, .4, 1);
+}
+
+/* Fast-select wide pill — lavender translucent fill, white text + bolt. */
+.ctl-fast-select {
+  height: 44px;
+  border-radius: 22px;
+  padding: 0 22px;
+  background: rgba(180, 160, 240, 0.22);
+  border: 1px solid rgba(200, 180, 255, 0.25);
+  color: #fff;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+.ctl-fast-icon { width: 18px; height: 18px; }
+
+/* Legacy CTA buttons (cta-reset, cta-randomise, cta-help, cta-primary)
+   are no longer in the DOM — the .cta-* rules above are kept-out so
+   any stray JS click handlers wired to those IDs don't blow up if they
+   refer to elements that aren't present in the new layout. */
+
+/* ── Toast (unchanged behaviour, new colours) ─────────────────── */
 .toast {
   position: absolute;
   left: 50%;
   top: 20px;
   transform: translateX(-50%);
-  background: rgba(0, 0, 0, 0.65);
+  background: rgba(20, 8, 50, 0.85);
   color: #fff;
-  padding: 8px 12px;
-  font-family: var(--pixel-font);
-  font-size: 9px;
+  padding: 8px 14px;
+  font-family: var(--ui-font);
+  font-size: 12px;
   letter-spacing: 0.04em;
+  border-radius: 6px;
+  border: 1px solid rgba(170, 120, 255, 0.4);
   opacity: 0;
   transition: opacity 200ms ease;
   pointer-events: none;
@@ -608,19 +501,16 @@ body {
 }
 .toast.visible { opacity: 1; }
 
-/* ---------- Game-complete celebration ---------- */
-/* Banner: pops up from behind the tray to announce the next game number,
-   holds, then slides back down behind the tray. The tray's higher
-   z-index (3) occludes it on ingress/egress. JS sets --tray-h at trigger
-   time so the up-target tracks the live tray height. */
+/* ── Game-complete banner — keep but restyle to purple ────────── */
 .game-message {
   position: fixed;
   bottom: 0;
   left: 50%;
   width: 210px;
   height: 53px;
-  background: url('/img/game-message.png') center/contain no-repeat;
-  image-rendering: pixelated;
+  background: linear-gradient(180deg, #6b3df0, #4a1f96);
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.18);
   pointer-events: none;
   z-index: 2;
   display: flex;
@@ -629,7 +519,7 @@ body {
   font-family: var(--ui-font);
   font-size: 18px;
   letter-spacing: 0.06em;
-  color: var(--tray-bg);
+  color: #fff;
   text-transform: uppercase;
   transform: translateX(-50%) translateY(0);
   visibility: hidden;
@@ -639,10 +529,6 @@ body {
   visibility: visible;
   animation: game-message-pop 1.8s linear forwards;
 }
-.game-message-text {
-  /* sit on the cream interior of the banner, slight optical centring */
-  padding-bottom: 2px;
-}
 @keyframes game-message-pop {
   0%   { transform: translateX(-50%) translateY(0); }
   15%  { transform: translateX(-50%) translateY(calc(-1 * var(--tray-h) - 8px)); }
@@ -650,427 +536,11 @@ body {
   100% { transform: translateX(-50%) translateY(0); }
 }
 
-/* Lotto-man jumps in place at the centre of the screen on each game
-   completion — straight up, peak at -30vh, back down. The wrapper holds
-   the static translateX(-50%) centering; the child holds the animated
-   translateY so the bounce doesn't fight the centering transform. */
-.lotto-man-arc {
-  position: fixed;
-  left: 50%;
-  /* -60px tucks his head under the tray at rest so only the jumping
-     portion of the arc clears the panel. */
-  bottom: -60px;
-  width: 297px;
-  height: 297px;
-  transform: translateX(-50%);
-  pointer-events: none;
-  /* Inside the .stage stacking context, sits above #bubbles (z:1) and
-     .sheet-edge (z:2) so he renders over the bubble grid. Because
-     .stage itself is z:1 at body level, the body-level .game-message
-     (z:2) and .tray (z:3) still paint over the entire stage stacking
-     context — so he's automatically below the banner and the panel. */
-  z-index: 3;
-  /* Hidden at rest so he never peeks above the tray (especially in
-     the collapsed strip, which doesn't fully cover his idle position).
-     The .is-jumping class flips opacity to 1 for the duration of the
-     animation; animationend in JS removes the class, returning him
-     to invisible. */
-  opacity: 0;
-}
-.lotto-man-arc.is-jumping,
-.lotto-man-arc.is-jumping-low {
-  opacity: 1;
-}
-.lotto-man-jump-img {
-  width: 100%;
-  height: 100%;
-  background: url('/img/lotto-man-jump.gif') center/contain no-repeat;
-  image-rendering: pixelated;
-}
-.lotto-man-arc.is-jumping > .lotto-man-jump-img {
-  animation: lotto-man-y 1.8s ease-in-out forwards;
-}
-.lotto-man-arc.is-jumping-low > .lotto-man-jump-img {
-  animation: lotto-man-y-low 1.8s ease-in-out forwards;
-}
-@keyframes lotto-man-y {
-  0%   { transform: translateY(0); }
-  50%  { transform: translateY(-30vh); }
-  100% { transform: translateY(0); }
-}
-@keyframes lotto-man-y-low {
-  0%   { transform: translateY(297px); }
-  50%  { transform: translateY(-10vh); }
-  100% { transform: translateY(297px); }
-}
+/* ── Lotto-man celebration: hidden in this redesign ───────────── */
+.lotto-man-arc { display: none; }
 
-/* ---------- Modal (all rows view) ---------- */
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  display: none;
-  align-items: center;
-  justify-content: center;
-  z-index: 10;
-  padding: 24px;
-}
-.modal-backdrop.visible { display: flex; }
-.modal {
-  background: var(--tray-bg);
-  border: 3px solid var(--purple);
-  box-shadow: inset 0 0 0 3px var(--tray-bg), inset 0 0 0 6px var(--purple);
-  width: 100%;
-  max-width: 380px;
-  max-height: 80vh;
-  display: flex;
-  flex-direction: column;
-  padding: 18px;
-  position: relative;
-  overflow: hidden;
-}
-.modal-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  color: var(--cyan-pale);
-  font-family: var(--ui-font);
-  font-size: 16px;
-  letter-spacing: 0.06em;
-  margin-bottom: 12px;
-}
-.modal-close {
-  background: transparent;
-  color: var(--purple-light);
-  border: 2px solid var(--purple);
-  width: 28px;
-  height: 28px;
-  font-family: var(--ui-font);
-  font-size: 16px;
-  cursor: pointer;
-  line-height: 1;
-}
-.modal-rows {
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,0.35) transparent;
-  padding-right: 2px;
-  transition: padding-bottom 280ms ease;
-}
-.modal-rows::-webkit-scrollbar { width: 4px; }
-.modal-rows::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.3);
-  border-radius: 2px;
-}
-.modal-row {
-  display: grid;
-  grid-template-columns: 32px repeat(7, 1fr);
-  gap: 6px;
-  align-items: center;
-}
-.modal-row-label {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  font-family: var(--ui-font);
-  font-size: 13px;
-  color: var(--cyan-pale);
-  letter-spacing: 0.04em;
-}
-.modal-row-heat {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  margin-left: 4px;
-  vertical-align: middle;
-}
-.modal-row-heat.heat-hot  { background: #ff7a3d; }
-.modal-row-heat.heat-cold { background: #5fc7e8; }
-.modal-checkbox {
-  appearance: none;
-  -webkit-appearance: none;
-  width: 14px;
-  height: 14px;
-  border: 2px solid var(--purple-light);
-  background: transparent;
-  cursor: pointer;
-  position: relative;
-  margin: 0;
-  padding: 0;
-}
-.modal-checkbox:checked {
-  background: var(--purple-light);
-}
-.modal-checkbox:checked::after {
-  content: '';
-  position: absolute;
-  top: -1px;
-  left: 3px;
-  width: 4px;
-  height: 8px;
-  border-right: 2px solid var(--tray-bg);
-  border-bottom: 2px solid var(--tray-bg);
-  transform: rotate(45deg);
-}
+/* ── Modal — hidden in this redesign (kept in DOM for state safety) */
+.modal-backdrop { display: none !important; }
 
-.modal-filters {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  margin-bottom: 10px;
-}
-.modal-filters-group {
-  display: flex;
-  gap: 6px;
-}
-.filter-pill {
-  font-family: var(--ui-font);
-  font-size: 13px;
-  letter-spacing: 0.06em;
-  padding: 6px 10px;
-  border: 2px solid var(--purple);
-  background: transparent;
-  color: var(--cyan-pale);
-  cursor: pointer;
-  text-transform: uppercase;
-}
-.filter-pill.active.all  { background: var(--cyan-pale); color: var(--indigo-text); border-color: var(--cyan-pale); }
-.filter-pill.active.hot  { background: #ff7a3d; color: var(--indigo-text); border-color: #ff7a3d; }
-.filter-pill.active.cold { background: #5fc7e8; color: var(--indigo-text); border-color: #5fc7e8; }
-
-/* Sort cycle button — three states: off (neutral), asc (▲), desc (▼).
-   Arrow indicator drawn with CSS borders so it stays pixel-crisp. */
-.modal-sort-btn {
-  font-family: var(--ui-font);
-  font-size: 13px;
-  letter-spacing: 0.06em;
-  padding: 6px 10px;
-  border: 2px solid var(--purple);
-  background: transparent;
-  color: var(--cyan-pale);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  text-transform: uppercase;
-}
-.modal-sort-btn::after {
-  content: '';
-  display: inline-block;
-  width: 0;
-  height: 0;
-  border-left: 4px solid transparent;
-  border-right: 4px solid transparent;
-  border-top: 5px solid currentColor;
-  opacity: 0.4;
-}
-.modal-sort-btn.asc {
-  border-color: var(--purple-light);
-}
-.modal-sort-btn.asc::after {
-  border-top: none;
-  border-bottom: 5px solid currentColor;
-  opacity: 1;
-}
-.modal-sort-btn.desc {
-  border-color: var(--purple-light);
-}
-.modal-sort-btn.desc::after {
-  opacity: 1;
-}
-
-.modal-action-bar {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: var(--tray-bg-2);
-  border-top: 3px solid var(--purple);
-  padding: 14px 18px calc(14px + env(safe-area-inset-bottom, 0px));
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  transform: translateY(100%);
-  transition: transform 280ms cubic-bezier(.25, 1.05, .4, 1);
-  z-index: 1;
-}
-.modal.has-action-bar .modal-action-bar {
-  transform: translateY(0);
-}
-.modal.has-action-bar .modal-rows {
-  padding-bottom: 84px;
-}
-
-/* ---------- Intro / splash sequence ---------- */
-/* @property registers the angle so it animates smoothly inside a
-   conic-gradient mask (without registration the keyframe would just
-   snap from initial to final). */
-@property --intro-rainbow-span {
-  syntax: '<angle>';
-  inherits: false;
-  initial-value: 0deg;
-}
-.intro-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 999;
-  background: #fff;
-  padding: 20px;
-  pointer-events: auto;
-}
-.intro-overlay.is-fading {
-  animation: intro-fade-out 300ms ease-out forwards;
-}
-.intro-panel {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  background: #FBFBFA;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.intro-cloud-bg {
-  position: absolute;
-  inset: 0;
-  background: url('/img/logo-ani/cloud-bg.png') center/cover no-repeat;
-  image-rendering: pixelated;
-  border-radius: 4px;
-  opacity: 0;
-  animation: intro-fade-in 600ms ease-out forwards;
-}
-/* Emoji explosion: container is panel-sized but overflow-visible, so
-   emojis can fly past the panel edge into the 20px white margin. */
-.intro-emoji-burst {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-.intro-emoji {
-  position: absolute;
-  /* --spawn-x fans the spawn point across the panel bottom edge, so the
-     simultaneous launch doesn't all originate from a single point. */
-  left: calc(50% + var(--spawn-x, 0px));
-  bottom: 0;
-  width: var(--size);
-  height: var(--size);
-  opacity: 0;
-  transform: translate(-50%, 0);
-  image-rendering: pixelated;
-  pointer-events: none;
-  will-change: transform, opacity;
-  animation: intro-emoji-burst var(--duration) ease-out var(--delay) forwards;
-}
-@keyframes intro-emoji-burst {
-  0%   { transform: translate(-50%, 0) rotate(0deg); opacity: 0; }
-  8%   { opacity: 1; }
-  50%  {
-    transform: translate(calc(-50% + var(--x) / 2), var(--y-peak))
-               rotate(calc(var(--rotation) / 2));
-    opacity: 1;
-  }
-  100% {
-    transform: translate(calc(-50% + var(--x)), var(--y-end))
-               rotate(var(--rotation));
-    opacity: 0;
-  }
-}
-.intro-logo {
-  position: relative;
-  width: 240px;
-  height: 215px;
-  /* Slight upward shift so the logo sits a touch above true centre,
-     matching how splash logos usually feel balanced. */
-  margin-top: -40px;
-}
-/* Layer positions are computed from each PNG's native pixel size
-   (rainbow 241×125, the 45×25, lott 159×63, drop-shadow 239×35) so the
-   four layers compose into the same logo lockup as the reference:
-   rainbow up top, "Lott" left-aligned beneath it, "the" tucked above
-   the L's top-left, drop-shadow tight against the Lott baseline. */
-.intro-rainbow {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 240px;
-  height: 125px;
-  background: url('/img/logo-ani/rainbow.png') center/contain no-repeat;
-  image-rendering: pixelated;
-  /* Mask is a conic wedge whose visible span grows from 0° to 180°.
-     Centred at 50% 100% — directly below the rainbow at its conceptual
-     focal point — and starting at 9 o'clock (`from -90deg`), the wedge
-     sweeps clockwise through 12 to 3 o'clock, tracing the arc from
-     left tip to right tip. */
-  --intro-rainbow-span: 0deg;
-  -webkit-mask: conic-gradient(from -90deg at 50% 100%, #000 var(--intro-rainbow-span), transparent 0);
-  mask: conic-gradient(from -90deg at 50% 100%, #000 var(--intro-rainbow-span), transparent 0);
-  animation: intro-rainbow-sweep 600ms ease-out forwards;
-}
-@keyframes intro-rainbow-sweep {
-  to { --intro-rainbow-span: 180deg; }
-}
-.intro-lott {
-  /* Left-aligned dominant word; left:0 anchors the L to the container
-     edge. Pulled up to top:65 so it overlaps the rainbow body rather
-     than sitting below it. */
-  position: absolute;
-  top: 65px;
-  left: 0;
-  width: 159px;
-  height: 63px;
-  background: url('/img/logo-ani/lott.png') center/contain no-repeat;
-  image-rendering: pixelated;
-  opacity: 0;
-  transform: translateX(-20px);
-  animation: intro-slide-in-lott 500ms ease-out 490ms forwards;
-}
-.intro-the {
-  /* Tucks into the L's negative space at the top — 24px right of the
-     container edge, 30px above the L's top, so its bottom-left lands
-     near the L's top-right inner corner. */
-  position: absolute;
-  top: 35px;
-  left: 29px;
-  width: 45px;
-  height: 25px;
-  background: url('/img/logo-ani/the.png') center/contain no-repeat;
-  image-rendering: pixelated;
-  opacity: 0;
-  transform: translateX(-130px);
-  animation: intro-slide-in 250ms cubic-bezier(0.22, 1, 0.36, 1) 400ms forwards;
-}
-.intro-shadow {
-  /* PNG has transparent padding around the visible shadow strokes,
-     so `top` is dialed in empirically rather than from bounding-box math. */
-  position: absolute;
-  top: 95px;
-  left: 0;
-  width: 240px;
-  height: 35px;
-  background: url('/img/logo-ani/drop-shadow.png') center/contain no-repeat;
-  image-rendering: pixelated;
-  opacity: 0;
-  animation: intro-fade-in 300ms ease-out 650ms forwards;
-}
-@keyframes intro-slide-in {
-  from { opacity: 0; transform: translateX(-130px); }
-  to   { opacity: 1; transform: translateX(0); }
-}
-@keyframes intro-slide-in-lott {
-  from { opacity: 0; transform: translateX(-20px); }
-  to   { opacity: 1; transform: translateX(0); }
-}
-@keyframes intro-fade-in {
-  to { opacity: 1; }
-}
-@keyframes intro-fade-out {
-  to { opacity: 0; }
-}
+/* ── Intro overlay — hidden in this redesign ─────────────────── */
+.intro-overlay { display: none !important; }

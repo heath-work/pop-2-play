@@ -1,94 +1,233 @@
 'use client';
 
 import { useEffect } from 'react';
+import * as THREE from 'three';
 
-/* Intro / splash sequence timings (ms). The DOM-side useEffect below
-   schedules class toggles against these so the overlay can self-remove
-   without React state churn. Logo sequence finishes at ~990ms; confetti
-   spawns then with a 3s arc. Fade-out starts mid-arc on purpose so the
-   game becomes interactive without waiting on the full confetti tail. */
-const INTRO_FADE_AT = 2400;   // start fade-out (mid-confetti-arc)
-const INTRO_REMOVE_AT = 2700; // remove from layout (after fade-out)
+/* ════════════════════════════════════════════════════════════════════
+   3D LOTTO BALL TEXTURE — ported from the shakeit app.
+   Each ball is a coloured sphere with six numbered "discs" arranged on
+   a triangular antiprism (3 upper + 3 lower, offset 60° in longitude).
+   Discs are drawn as upright stamps and warped onto an equirectangular
+   texture, so the rendered sphere shows geometrically true circles
+   instead of stretched ellipses near the poles.
 
-/* Emoji explode-from-bottom: triggers as Lott settles (~990ms = 490ms
-   delay + 500ms slide). All seven emojis sampled with replacement; each
-   gets randomised trajectory + rotation + size via CSS vars. */
-const EMOJI_SPAWN_AT = 990;
-const EMOJI_COUNT = 8;
-const EMOJI_SVGS = [
-  '/img/logo-ani/emojis/⚡ - High Voltage.svg',
-  '/img/logo-ani/emojis/🌈 - Rainbow.svg',
-  '/img/logo-ani/emojis/👾 - Alien Monster.svg',
-  '/img/logo-ani/emojis/🔥 - Fire.svg',
-  '/img/logo-ani/emojis/🕹️ - Joystick.svg',
-  '/img/logo-ani/emojis/😎 - Smiling Face with Sunglasses.svg',
-  '/img/logo-ani/emojis/🫶 - Heart Hands.svg',
+   Why duplicated here (vs. imported from a shared util): keeping the
+   renderer self-contained means tuning disc layout / fonts for this
+   app doesn't reach back into shakeit. Single-file footprint also
+   keeps Next.js per-route code-splitting simple.
+   ════════════════════════════════════════════════════════════════════ */
+const HUE_MAP = [4, 32, 54, 100, 170, 215, 270, 325];
+function ballHue(n) { return HUE_MAP[(n - 1) % HUE_MAP.length]; }
+/* Lightness sits at 0.50 — vivid mid-tone, close to the raw hex.
+   We render through MeshBasicMaterial (unlit) so the texture colour
+   reaches the screen unattenuated; pushing lightness higher just makes
+   the ball look washed out / pastel rather than punchier. */
+const BALL_SAT = 0.95, BALL_LIGHT = 0.50;
+function ballFillCss(h) {
+  return `hsl(${h}, ${BALL_SAT * 100}%, ${BALL_LIGHT * 100}%)`;
+}
+/* sRGB relative luminance of the ball's solid fill — drives white-vs-dark
+   glyph contrast since we draw numbers directly on the coloured sphere
+   now (no white disc backing). Yellows/cyans/greens → dark navy text;
+   purples/pinks → white text. */
+function ballLuminance(h) {
+  const s = BALL_SAT, l = BALL_LIGHT;
+  const c  = (1 - Math.abs(2 * l - 1)) * s;
+  const hp = h / 60;
+  const x  = c * (1 - Math.abs((hp % 2) - 1));
+  const m  = l - c / 2;
+  let r = 0, g = 0, b = 0;
+  if      (hp < 1) { r = c; g = x; }
+  else if (hp < 2) { r = x; g = c; }
+  else if (hp < 3) {         g = c; b = x; }
+  else if (hp < 4) {         g = x; b = c; }
+  else if (hp < 5) { r = x;         b = c; }
+  else             { r = c;         b = x; }
+  r += m; g += m; b += m;
+  const lin = v => v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+/* Threshold 0.35 — yellow / green / cyan / orange all have luminance
+   ≥ 0.37 and read better with dark navy glyphs; red / blue / purple /
+   pink fall below and need white. Lower than the WCAG-style 0.45
+   threshold because orange (L≈0.38) genuinely looks better with dark
+   text per the design reference. */
+function numTextColor(h) { return ballLuminance(h) > 0.35 ? '#0b1140' : '#ffffff'; }
+
+/* Two antipodal discs at the equator: front (lon = +π/2 → maps to the
+   camera +Z under three.js's default sphere mapping) and back.
+   The earlier 6-disc antiprism (a leftover from shakeit's free-tumbling
+   physics ball) let us see a number from any orientation, but our
+   balls always settle to the same final pose, so we really only need
+   the front disc. A back twin gives the spin-in mid-flight a number
+   to show as the sphere half-turns.
+   With only two discs π rad apart, DISC_ANGULAR_R can sit at 0.69 rad
+   (~40°) without any rim bleed: each cap is bounded by z = R·cos(R),
+   so it stays entirely in its hemisphere (z ≥ +0.77R for front, z ≤
+   -0.77R for back) — never reaches the z=0 silhouette. */
+const DISC_POSITIONS = [
+  [0,  Math.PI / 2],   // front
+  [0, -Math.PI / 2],   // back
 ];
+const DISC_ANGULAR_R = 0.69;
 
-/* The bubble-wrap fidget is an inherently imperative piece of UI: it
-   manipulates a lot of DOM (canvas-drawn clouds, dynamically positioned
-   bubbles, animation lifecycle classes, audio nodes, etc.). Rather than
-   rewrite all of that into React state, we render the static skeleton in
-   JSX and run the original logic inside a single useEffect. An
-   AbortController scopes window/document listeners so dev-time strict-mode
-   double-mounts (and unmounts) clean up after themselves. */
-export default function BubbleWrapFidget() {
-  /* Intro overlay lifecycle: keeps the splash up while the CSS-driven
-     animation chain plays, then fades it and removes it from layout so
-     the game becomes interactive. Kept separate from the game's main
-     useEffect so the intro never blocks game setup. */
-  useEffect(() => {
-    const introEl = document.getElementById('introOverlay');
-    if (!introEl) return;
-    const timeouts = [];
-    timeouts.push(setTimeout(() => introEl.classList.add('is-fading'), INTRO_FADE_AT));
-    timeouts.push(setTimeout(() => { introEl.style.display = 'none'; }, INTRO_REMOVE_AT));
+function buildStamp(number) {
+  /* SIZE 128 (was 96): the stamp's inscribed circle is the cap's
+     boundary on the sphere — anything painted in the stamp corners
+     never reaches the rendered disc. Bumping SIZE while keeping
+     FONT_SIZE at 0.85·SIZE preserves the rendered glyph proportions
+     while giving the two-digit numbers more headroom inside the
+     circle. */
+  const SIZE = 128;
+  const stamp = document.createElement('canvas');
+  stamp.width = SIZE; stamp.height = SIZE;
+  const sctx = stamp.getContext('2d');
+  const str = String(number);
+  const FONT_SIZE = SIZE * 0.75;
+  /* Sharp Grotesk Medium (weight 500) — registered in globals.css.
+     Falls back to Larsseit / system-ui while the otf streams; the
+     rebake-on-fontsready effect below re-renders any textures baked
+     with the fallback once SharpGrotesk is available. */
+  sctx.font = `500 ${FONT_SIZE}px "SharpGrotesk", "Larsseit", system-ui, sans-serif`;
+  sctx.textAlign = 'center';
+  /* Centre the glyph using its actual ink-box metrics instead of
+     canvas's 'middle' baseline. 'middle' positions y at the centre of
+     the EM box, which for SharpGrotesk Medium sits visibly below the
+     centre of the visible digit (the font has a tall descender area
+     even though digits don't use it). That offset is what was clipping
+     the bottom of digits against the disc's inscribed circle. Using
+     `alphabetic` + measureText gives a true optical centre. */
+  sctx.textBaseline = 'alphabetic';
+  sctx.fillStyle = numTextColor(ballHue(number));
+  const m = sctx.measureText(str);
+  const inkH = m.actualBoundingBoxAscent + m.actualBoundingBoxDescent;
+  const yBaseline = (SIZE - inkH) / 2 + m.actualBoundingBoxAscent;
+  sctx.fillText(str, SIZE / 2, yBaseline);
+  /* Underline 6/9 so orientation reads correctly mid-spin. Sits just
+     under the alphabetic baseline. */
+  if (str === '6' || str === '9') {
+    const w = m.width;
+    sctx.fillRect(
+      SIZE / 2 - w / 2 + 2,
+      yBaseline + FONT_SIZE * 0.06,
+      w - 4,
+      Math.max(2, FONT_SIZE * 0.06),
+    );
+  }
+  return { size: SIZE, data: sctx.getImageData(0, 0, SIZE, SIZE) };
+}
 
-    const burstEl = document.getElementById('introEmojiBurst');
-    if (burstEl) {
-      timeouts.push(setTimeout(() => {
-        const rand = (lo, hi) => lo + Math.random() * (hi - lo);
-        const sign = () => (Math.random() < 0.5 ? -1 : 1);
-        const panelWidth = burstEl.getBoundingClientRect().width;
-        for (let i = 0; i < EMOJI_COUNT; i++) {
-          const img = document.createElement('img');
-          img.className = 'intro-emoji';
-          img.alt = '';
-          img.src = encodeURI(EMOJI_SVGS[Math.floor(Math.random() * EMOJI_SVGS.length)]);
-          const size = Math.round(rand(48, 128));
-          const spawnX = sign() * rand(0, 0.4) * panelWidth;
-          const x = sign() * rand(400, 1000);
-          const yPeak = -rand(380, 820);
-          const yEnd = rand(220, 500);
-          const rotation = sign() * rand(360, 720);
-          img.style.cssText =
-            `--spawn-x:${spawnX.toFixed(0)}px;--x:${x.toFixed(0)}px;` +
-            `--y-peak:${yPeak.toFixed(0)}px;--y-end:${yEnd.toFixed(0)}px;` +
-            `--rotation:${rotation.toFixed(0)}deg;--size:${size}px;` +
-            `--duration:3000ms;--delay:0ms;`;
-          /* Fallback cleanup for emojis that finish before the overlay
-             is removed; mid-flight ones get GC'd with the overlay. */
-          img.addEventListener('animationend', () => img.remove(), { once: true });
-          burstEl.appendChild(img);
-        }
-      }, EMOJI_SPAWN_AT));
+function warpDisc(texData, W, H, lat0, lon0, stamp) {
+  const sData = stamp.data.data;
+  const SIZE = stamp.size;
+  const R = DISC_ANGULAR_R;
+  const cosR = Math.cos(R), sinR = Math.sin(R);
+  const cLat = Math.cos(lat0), sLat = Math.sin(lat0);
+  const vMax = Math.min(1, (lat0 + R) / Math.PI + 0.5);
+  const vMin = Math.max(0, (lat0 - R) / Math.PI + 0.5);
+  const yMin = Math.max(0,     Math.floor((1 - vMax) * H));
+  const yMax = Math.min(H - 1, Math.ceil((1 - vMin) * H));
+  for (let py = yMin; py <= yMax; py++) {
+    const lat = (1 - (py + 0.5) / H - 0.5) * Math.PI;
+    const cL = Math.cos(lat), sL = Math.sin(lat);
+    const denom = cL * cLat;
+    let halfLon;
+    if (denom < 1e-9) {
+      if (sL * sLat < cosR) continue;
+      halfLon = Math.PI;
+    } else {
+      const arg = (cosR - sL * sLat) / denom;
+      if (arg > 1) continue;
+      halfLon = arg < -1 ? Math.PI : Math.acos(arg);
     }
+    const pxStart = Math.floor((lon0 - halfLon) / (2 * Math.PI) * W);
+    const pxEnd   = Math.ceil ((lon0 + halfLon) / (2 * Math.PI) * W);
+    for (let px = pxStart; px <= pxEnd; px++) {
+      const du = (px + 0.5) / W * 2 * Math.PI - lon0;
+      const cU = Math.cos(du), sU = Math.sin(du);
+      const d = sL * sLat + cL * cLat * cU;
+      if (d < cosR) continue;
+      const e = cL * sU;
+      const n = sL * cLat - sLat * cL * cU;
+      const six = Math.floor((e / sinR + 1) * 0.5 * SIZE);
+      const siy = Math.floor((1 - n / sinR) * 0.5 * SIZE);
+      if (six < 0 || six >= SIZE || siy < 0 || siy >= SIZE) continue;
+      const sIdx = (siy * SIZE + six) * 4;
+      const sa = sData[sIdx + 3];
+      if (sa === 0) continue;
+      const wrappedPx = ((px % W) + W) % W;
+      const tIdx = (py * W + wrappedPx) * 4;
+      const a = sa / 255, inv = 1 - a;
+      texData[tIdx]     = sData[sIdx]     * a + texData[tIdx]     * inv;
+      texData[tIdx + 1] = sData[sIdx + 1] * a + texData[tIdx + 1] * inv;
+      texData[tIdx + 2] = sData[sIdx + 2] * a + texData[tIdx + 2] * inv;
+      texData[tIdx + 3] = 255;
+    }
+  }
+}
 
-    return () => {
-      timeouts.forEach(clearTimeout);
-      if (burstEl) burstEl.replaceChildren();
-    };
-  }, []);
+function makeBallTexture(number) {
+  const W = 512, H = 256;
+  const cvs = document.createElement('canvas');
+  cvs.width = W; cvs.height = H;
+  const ctx = cvs.getContext('2d');
 
+  // Solid base colour.
+  ctx.fillStyle = ballFillCss(ballHue(number));
+  ctx.fillRect(0, 0, W, H);
+
+  // Vertical highlight/shadow gradient baked into the texture.
+  // Equirectangular: v=0 is the north pole → top of the rendered ball;
+  // v=1 is the south pole → bottom. A semi-transparent white→clear at
+  // the top adds a glossy sheen; a clear→black at the bottom adds a
+  // soft shadow that grounds the ball. Painted BEFORE the disc stamps
+  // so the number stays unaffected — disc warpDisc overwrites these
+  // pixels where its stamp has alpha.
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0.00, 'rgba(255, 255, 255, 0.42)');
+  grad.addColorStop(0.32, 'rgba(255, 255, 255, 0.00)');
+  grad.addColorStop(0.68, 'rgba(0, 0, 0, 0.00)');
+  grad.addColorStop(1.00, 'rgba(0, 0, 0, 0.40)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  const stamp = buildStamp(number);
+  const img = ctx.getImageData(0, 0, W, H);
+  for (const [lat, lon] of DISC_POSITIONS) {
+    warpDisc(img.data, W, H, lat, lon, stamp);
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(cvs);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.anisotropy = 4;
+  return tex;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   GAME CONFIG
+   ════════════════════════════════════════════════════════════════════ */
+const NUMBERS_PER_GAME = 8;
+const COLS = 6;
+const DEFAULT_GAMES = 20;
+
+/* Spin-in: ball enters from below the ring slot, spins on Y, then
+   settles dead-front with the glyph upright. With the front disc at
+   (lat=0, lon=π/2) the disc centre already lands on +Z at rotation
+   (0, 0, 0), so the final pose needs no tilt at all. The stamp's "up"
+   maps to sphere-north (+Y), which projects to screen +Y → upright. */
+const SPIN_DURATION_MS  = 700;
+const SPIN_REVOLUTIONS  = 2.4;
+const FINAL_ROT_X       = 0;
+const FINAL_ROT_Y       = 0;
+
+export default function BubbleWrapFidget() {
   useEffect(() => {
     const ac = new AbortController();
     const { signal } = ac;
 
-    /* ---------- Config ---------- */
-    const NUMBERS_PER_GAME = 7;
-    const COLS = 6;
-    let ROW_COUNTS = [6, 5, 6, 5, 6, 5, 6, 5, 6];
-    let TOTAL_NUMBERS = ROW_COUNTS.reduce((a, b) => a + b, 0);
+    /* ── Grid sizing — recomputed on every layout/refill ────────── */
+    let ROW_COUNTS = [];
+    let TOTAL_NUMBERS = 0;
 
     let bubbleNumPermutation = null;
     function ensureBubblePermutation(total) {
@@ -102,67 +241,50 @@ export default function BubbleWrapFidget() {
       bubbleNumPermutation = arr;
     }
 
-    /* ---------- DOM ---------- */
-    const stage = document.getElementById('stage');
-    const bubblesEl = document.getElementById('bubbles');
-    const cloudLayerEl = document.getElementById('cloudLayer');
-    const trayCountEl = document.getElementById('trayCount');
-    const trayPageNumEl = document.getElementById('trayPageNum');
-    const trayProgressBarEl = document.getElementById('trayProgressBar');
-    const visibleRowEl = document.getElementById('visibleRow');
-    const trayUpEl = document.getElementById('trayUp');
-    const trayDownEl = document.getElementById('trayDown');
-    const trayModalBtnEl = document.getElementById('trayModalBtn');
-    const modalBackdropEl = document.getElementById('modalBackdrop');
-    const modalEl = document.getElementById('modalEl');
-    const modalFiltersEl = document.getElementById('modalFilters');
-    const modalPlayBtnEl = document.getElementById('modalPlayBtn');
-    const modalCloseEl = document.getElementById('modalClose');
-    const modalRowsEl = document.getElementById('modalRows');
-    const toastEl = document.getElementById('toast');
-    const trayEl = document.querySelector('.tray');
+    /* ── DOM refs ───────────────────────────────────────────────── */
+    const stage      = document.getElementById('stage');
+    const bubblesEl  = document.getElementById('bubbles');
+    const toastEl    = document.getElementById('toast');
+    const trayEl     = document.querySelector('.tray');
+    const ringsEl    = document.getElementById('trayRings');
+    const ringEls    = ringsEl ? Array.from(ringsEl.querySelectorAll('.ring')) : [];
+    const ballCanvas = document.getElementById('ballOverlay');
+    const ghostRowEl = document.getElementById('trayGhostRow');
+    const gameLabelEl = document.getElementById('trayGameLabel');
+    const ctaExitEl  = document.getElementById('ctaExit');
+    const ctaPillEl  = document.getElementById('ctaPill');
+    const ctaPillCountEl = document.getElementById('ctaPillCount');
+    const ctaPillProgressEl = document.getElementById('ctaPillProgress');
+    const ctaFastSelectEl = document.getElementById('ctaFastSelect');
     const gameMessageEl = document.getElementById('gameMessage');
     const gameMessageTextEl = document.getElementById('gameMessageText');
-    const lottoManEl = document.getElementById('lottoManArc');
-    const ctaPlayEl = document.getElementById('ctaPlay');
-    const ctaResetEl = document.getElementById('ctaReset');
-    const ctaRandomiseEl = document.getElementById('ctaRandomise');
-    const ctaHelpEl = document.getElementById('ctaHelp');
 
-    if (!stage) return; // skeleton not mounted yet
+    if (!stage || !bubblesEl) return;
 
-    /* ---------- Audio ---------- */
+    /* ── Audio (Web Audio buffer + <audio> pool fallback) ──────── */
     const POP_SRC = '/bubble-pop.wav';
     const POP_POOL_SIZE = 8;
-
     let audioCtx = null;
     let popBuffer = null;
     let popBufferLoading = false;
-
     const popPool = [];
     let popPoolIdx = 0;
     let popPoolUnlocked = false;
-
     for (let i = 0; i < POP_POOL_SIZE; i++) {
       const a = new Audio(POP_SRC);
       a.preload = 'auto';
       popPool.push(a);
     }
-
     function ensureAudio() {
       if (!audioCtx) {
         const AC = window.AudioContext || window.webkitAudioContext;
         if (AC) {
-          try {
-            audioCtx = new AC();
-            loadPopBuffer();
-          } catch (_) {}
+          try { audioCtx = new AC(); loadPopBuffer(); } catch (_) {}
         }
       }
       if (audioCtx && audioCtx.state === 'suspended') {
         audioCtx.resume().catch(() => {});
       }
-
       if (!popPoolUnlocked) {
         popPoolUnlocked = true;
         for (const a of popPool) {
@@ -176,11 +298,8 @@ export default function BubbleWrapFidget() {
         }
       }
     }
-
     async function loadPopBuffer() {
       if (popBufferLoading || popBuffer || !audioCtx) return;
-      // file:// origins can't fetch local assets — but Next.js always serves
-      // over http(s), so this guard is only here for static-export use.
       if (location.protocol === 'file:') return;
       popBufferLoading = true;
       try {
@@ -194,7 +313,6 @@ export default function BubbleWrapFidget() {
         popBufferLoading = false;
       }
     }
-
     function playPop(variation = 0) {
       if (audioCtx && popBuffer) {
         try {
@@ -220,18 +338,11 @@ export default function BubbleWrapFidget() {
         if (p && typeof p.catch === 'function') p.catch(() => {});
       } catch (_) {}
     }
-
-    /* Short ascending major-triad chime played when a row/game completes.
-       Tweak the constants below to adjust pitch, pacing, timbre, or volume.
-       To swap for an mp3 instead: drop a file in /public/ (e.g.
-       /public/row-complete.mp3) and replace this function body with
-       `new Audio('/row-complete.mp3').play().catch(() => {});`. */
-    const ROW_COMPLETE_NOTE_FREQS    = [523.25, 659.25, 783.99]; // C5, E5, G5
-    const ROW_COMPLETE_NOTE_INTERVAL = 0.07;   // seconds between note onsets
-    const ROW_COMPLETE_NOTE_DECAY    = 0.10;   // seconds of decay per note
-    const ROW_COMPLETE_ATTACK        = 0.005;  // seconds of attack per note
-    const ROW_COMPLETE_PEAK_GAIN     = 0.22;   // peak gain (0..1)
-    const ROW_COMPLETE_OSC_TYPE      = 'sine'; // 'sine' or 'triangle'
+    const ROW_COMPLETE_NOTE_FREQS    = [523.25, 659.25, 783.99];
+    const ROW_COMPLETE_NOTE_INTERVAL = 0.07;
+    const ROW_COMPLETE_NOTE_DECAY    = 0.10;
+    const ROW_COMPLETE_ATTACK        = 0.005;
+    const ROW_COMPLETE_PEAK_GAIN     = 0.22;
     function playRowComplete() {
       if (!audioCtx) return;
       try {
@@ -239,7 +350,7 @@ export default function BubbleWrapFidget() {
         ROW_COMPLETE_NOTE_FREQS.forEach((freq, i) => {
           const start = t0 + i * ROW_COMPLETE_NOTE_INTERVAL;
           const osc = audioCtx.createOscillator();
-          osc.type = ROW_COMPLETE_OSC_TYPE;
+          osc.type = 'sine';
           osc.frequency.setValueAtTime(freq, start);
           const gain = audioCtx.createGain();
           gain.gain.setValueAtTime(0.0001, start);
@@ -253,7 +364,6 @@ export default function BubbleWrapFidget() {
         });
       } catch (_) {}
     }
-
     function playSwoosh() {
       if (!audioCtx) return;
       try {
@@ -264,7 +374,6 @@ export default function BubbleWrapFidget() {
         const buffer = audioCtx.createBuffer(1, len, sr);
         const data = buffer.getChannelData(0);
         for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
-
         const src = audioCtx.createBufferSource();
         src.buffer = buffer;
         const filter = audioCtx.createBiquadFilter();
@@ -283,26 +392,19 @@ export default function BubbleWrapFidget() {
       } catch (_) {}
     }
 
-    /* ---------- Haptics ---------- */
-    // iPadOS reports platform "MacIntel" but exposes touch points, so
-    // we cover that case alongside the obvious UA strings.
+    /* ── Haptics (iOS switch-input + navigator.vibrate fallback) ── */
     const IS_IOS =
       /iPad|iPhone|iPod/.test(navigator.userAgent) ||
       (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-
     let _hapticSwitch = null;
     function ensureHapticSwitch() {
       if (_hapticSwitch) return _hapticSwitch;
       const label = document.createElement('label');
       label.setAttribute('aria-hidden', 'true');
-      // 1×1 invisible. Fully zero-sized inputs may be skipped by the
-      // haptic engine; keep the box real, just out of sight.
       label.style.cssText =
         'position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;';
       const input = document.createElement('input');
       input.type = 'checkbox';
-      // The `switch` attribute is iOS 17.4+ / Safari 17.4+. On older
-      // versions it is ignored and no haptic fires (silent no-op).
       input.setAttribute('switch', '');
       label.appendChild(input);
       document.body.appendChild(label);
@@ -310,15 +412,8 @@ export default function BubbleWrapFidget() {
       return _hapticSwitch;
     }
     function haptic(duration = 8) {
-      // On iOS, navigator.vibrate exists in some browsers (e.g. Chrome
-      // iOS) but is a silent no-op — taking that branch swallows the
-      // call. Always route iOS to the switch-input fallback.
       if (IS_IOS) {
-        try {
-          // .click() toggles checked AND fires click + change events,
-          // closer to a real user gesture than dispatching change alone.
-          ensureHapticSwitch().input.click();
-        } catch (_) {}
+        try { ensureHapticSwitch().input.click(); } catch (_) {}
         return;
       }
       if (navigator.vibrate) {
@@ -328,170 +423,70 @@ export default function BubbleWrapFidget() {
       }
     }
 
-    /* ---------- Bubble assets ---------- */
+    /* ── Bubble assets ──────────────────────────────────────────── */
     const BUBBLE_INTACT_SRC = '/bubble-static.png';
     const BUBBLE_POPPED_SRC = '/bubble-popped.png';
 
-    /* ---------- Cloud sprites ---------- */
-    const CLOUD_PATTERNS = [
-      [
-        '....##....',
-        '..######..',
-        '##########',
-        '##########',
-        '.########.',
-      ],
-      [
-        '......####....',
-        '....########..',
-        '.#############',
-        '##############',
-        '##############',
-        '.############.',
-      ],
-      [
-        '....######........',
-        '..############....',
-        '.###############..',
-        '##################',
-        '##################',
-        '.################.',
-        '..##############..',
-      ],
-      [
-        '....######..',
-        '..########..',
-        '.##########.',
-        '############',
-        '############',
-        '.##########.',
-        '..########..',
-      ],
-    ];
+    /* ── Bubble frame layout — fixed pixel spec ──────────────────
+       Frame:    362 × 548 (centred horizontally in the stage)
+       Padding:  15 top · 14 bottom · 8 L/R (used by odd rows)
+       Rows:     10 total, alternating 6 / 5 bubbles
+       Bubble:   52 × 51
+       Gaps:     7 px horizontal · 1 px vertical
+       Even rows: 37 px L/R padding (5 bubbles centred wider)
 
-    function drawCloudSprite(canvas, pattern, scale) {
-      const cols = pattern[0].length;
-      const rows = pattern.length;
-      canvas.width = cols * scale;
-      canvas.height = rows * scale;
-      const ctx = canvas.getContext('2d');
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = '#ffffff';
-      for (let y = 0; y < rows; y++) {
-        const line = pattern[y];
-        for (let x = 0; x < cols; x++) {
-          if (line[x] === '#') ctx.fillRect(x * scale, y * scale, scale, scale);
-        }
-      }
-    }
-
-    function spawnClouds() {
-      if (!cloudLayerEl) return;
-      cloudLayerEl.innerHTML = '';
-      const stageH = stage.clientHeight || 500;
-      const count = 5;
-      for (let i = 0; i < count; i++) {
-        const pattern = CLOUD_PATTERNS[Math.floor(Math.random() * CLOUD_PATTERNS.length)];
-        const scale = 2 + Math.floor(Math.random() * 2);
-        const cloud = document.createElement('canvas');
-        cloud.className = 'cloud';
-        drawCloudSprite(cloud, pattern, scale);
-        const yMax = Math.max(60, stageH * 0.7);
-        cloud.style.top = (16 + Math.random() * yMax) + 'px';
-        const duration = 50 + Math.random() * 50;
-        const delay = -Math.random() * duration;
-        cloud.style.animation = `cloud-drift ${duration}s linear ${delay}s infinite`;
-        cloudLayerEl.appendChild(cloud);
-      }
-    }
-
-    function drawBurstSprite(canvas) {
-      const S = canvas.width;
-      const ctx = canvas.getContext('2d');
-      const C = S / 2;
-      ctx.clearRect(0, 0, S, S);
-      const rings = [
-        { r: S / 2 - 1, alpha: 1,   density: 0.7 },
-        { r: S / 2 - 4, alpha: 0.6, density: 0.5 },
-      ];
-      for (const ring of rings) {
-        ctx.fillStyle = ring.alpha === 1 ? '#ffffff' : 'rgba(255,255,255,0.6)';
-        for (let y = 0; y < S; y++) {
-          for (let x = 0; x < S; x++) {
-            const dx = x + 0.5 - C;
-            const dy = y + 0.5 - C;
-            const d = Math.sqrt(dx * dx + dy * dy);
-            if (d > ring.r - 0.6 && d <= ring.r + 0.4) {
-              if (Math.random() < ring.density) ctx.fillRect(x, y, 1, 1);
-            }
-          }
-        }
-      }
-    }
-
-    /* ---------- Grid layout ---------- */
-    const STRIP_H = 14;
-    const VERTICAL_OVERLAP = 12;
-
+       Vertical: 15 + 10·51 + 9·1 + 14 = 548 ✓
+       Odd row : 8 + 6·52 + 5·7 + 8 = 363 ≈ 362
+       Even row: 37 + 5·52 + 4·7 + 37 = 362 ✓
+       Total numbers per sheet = 5·6 + 5·5 = 55. */
+    const FRAME_W = 362;
+    const FRAME_H = 548;
+    const FRAME_TOP = 52;            // pixels below stage top (clears status bar + breathing room)
+    const FRAME_PAD_TOP = 15;
+    const FRAME_PAD_LR_ODD  = 8;
+    const FRAME_PAD_LR_EVEN = 37;
+    const BUBBLE_W = 52;
+    const BUBBLE_H = 51;
+    const BUBBLE_GAP_X = 7;
+    const ROW_GAP_Y   = 1;
+    const ROW_TOTAL   = 10;
     function computeLayout() {
       const rect = stage.getBoundingClientRect();
       const width = rect.width;
       const height = rect.height;
-      const bubbleW = width / COLS;
-      const radius = bubbleW / 2;
-      const rowH = bubbleW - VERTICAL_OVERLAP;
-      const startY = STRIP_H + radius;
-      const startX = 0;
+      const frameX = Math.max(0, Math.round((width - FRAME_W) / 2));
+      const frameY = FRAME_TOP;
 
-      const usableH = height - STRIP_H - bubbleW;
-      const fitRows = Math.max(1, Math.floor(usableH / rowH) + 1);
       ROW_COUNTS = [];
-      for (let r = 0; r < fitRows; r++) {
-        // Even rows: COLS bubbles edge-to-edge.
-        // Odd rows:  COLS+1 bubbles, first and last half-bleeding past
-        //            the viewport for a hex-packed wrap-around look.
-        ROW_COUNTS.push(r % 2 === 0 ? COLS : COLS + 1);
+      for (let r = 0; r < ROW_TOTAL; r++) {
+        // Row 0 = first row, treated as "odd" (6 bubbles).
+        ROW_COUNTS.push(r % 2 === 0 ? 6 : 5);
       }
       TOTAL_NUMBERS = ROW_COUNTS.reduce((a, b) => a + b, 0);
-
       ensureBubblePermutation(TOTAL_NUMBERS);
 
       const bubbles = [];
       let posIdx = 0;
       ROW_COUNTS.forEach((count, rowIdx) => {
-        // For the wider odd rows, shift the row left by half a bubble so
-        // the first bubble's centre sits on the viewport's left edge
-        // (only its right half is visible) — and symmetrically on the right.
-        const offset = count === COLS + 1 ? -bubbleW / 2 : 0;
+        const padLR = count === 6 ? FRAME_PAD_LR_ODD : FRAME_PAD_LR_EVEN;
+        const rowY  = frameY + FRAME_PAD_TOP + rowIdx * (BUBBLE_H + ROW_GAP_Y);
         for (let i = 0; i < count; i++) {
-          const cx = startX + offset + bubbleW * (i + 0.5);
-          const cy = startY + rowH * rowIdx;
-          bubbles.push({ num: bubbleNumPermutation[posIdx++], cx, cy, radius });
+          const x = frameX + padLR + i * (BUBBLE_W + BUBBLE_GAP_X);
+          bubbles.push({
+            num: bubbleNumPermutation[posIdx++],
+            cx: x + BUBBLE_W / 2,
+            cy: rowY + BUBBLE_H / 2,
+            w: BUBBLE_W,
+            h: BUBBLE_H,
+          });
         }
       });
-
-      const lastRowIdx = ROW_COUNTS.length - 1;
-      const randCy = startY + rowH * lastRowIdx;
-      const randCxStart = startX + bubbleW * 3;
-      const randCxEnd = startX + bubbleW * 6 - 8;
-      const randCx = (randCxStart + randCxEnd) / 2;
-      const randW = randCxEnd - randCxStart;
-
-      const gridTopY = bubbles[0].cy - radius;
-      let gridBottomY = 0;
-      for (const b of bubbles) gridBottomY = Math.max(gridBottomY, b.cy + b.radius);
-
-      return {
-        width, height, bubbles, bubbleW, rowH,
-        gridTopY, gridBottomY,
-        rand: { cx: randCx, cy: randCy, w: randW },
-      };
+      return { width, height, bubbles, frameX, frameY };
     }
 
-    /* ---------- Bubble render ---------- */
+    /* ── Bubble render + drag-to-pop ───────────────────────────── */
     const bubbleEls = new Map();
     const bubbleStates = new Map();
-
     let isDragging = false;
     function bubbleNumAt(clientX, clientY) {
       const hit = document.elementFromPoint(clientX, clientY);
@@ -513,30 +508,25 @@ export default function BubbleWrapFidget() {
     function renderBubbles(layout) {
       bubblesEl.innerHTML = '';
       bubbleEls.clear();
-
       for (const b of layout.bubbles) {
         if (!bubbleStates.has(b.num)) {
           bubbleStates.set(b.num, { popped: false });
         }
         const state = bubbleStates.get(b.num);
-
         const el = document.createElement('button');
         el.className = 'bubble';
         el.type = 'button';
-        el.style.left = (b.cx - b.radius) + 'px';
-        el.style.top = (b.cy - b.radius) + 'px';
-        el.style.width = (b.radius * 2) + 'px';
-        el.style.height = (b.radius * 2) + 'px';
+        el.style.left = (b.cx - b.w / 2) + 'px';
+        el.style.top = (b.cy - b.h / 2) + 'px';
+        el.style.width = b.w + 'px';
+        el.style.height = b.h + 'px';
         el.dataset.num = b.num;
-
         const img = document.createElement('img');
         img.src = state.popped ? BUBBLE_POPPED_SRC : BUBBLE_INTACT_SRC;
         img.alt = '';
         img.draggable = false;
         el.appendChild(img);
-
         if (state.popped) el.classList.add('popped');
-
         el.addEventListener('pointerdown', (ev) => {
           ev.preventDefault();
           ensureAudio();
@@ -544,49 +534,33 @@ export default function BubbleWrapFidget() {
           try { el.releasePointerCapture(ev.pointerId); } catch (_) {}
           popBubble(b.num);
         });
-
         bubblesEl.appendChild(el);
         bubbleEls.set(b.num, el);
       }
-
-      const existing = stage.querySelector('.randomise');
-      if (existing) existing.remove();
-      const btn = document.createElement('button');
-      btn.className = 'randomise';
-      btn.textContent = 'RANDOMISE';
-      btn.style.left = layout.rand.cx + 'px';
-      btn.style.top = layout.rand.cy + 'px';
-      btn.addEventListener('click', onRandomise);
-      stage.appendChild(btn);
     }
 
     function spawnBurst(cx, cy, size) {
-      const canvas = document.createElement('canvas');
-      canvas.className = 'burst';
-      canvas.width = 24;
-      canvas.height = 24;
-      drawBurstSprite(canvas);
+      const el = document.createElement('div');
+      el.className = 'burst';
       const s = size;
-      canvas.style.left = (cx - s / 2) + 'px';
-      canvas.style.top = (cy - s / 2) + 'px';
-      canvas.style.width = s + 'px';
-      canvas.style.height = s + 'px';
-      bubblesEl.appendChild(canvas);
-      canvas.addEventListener('animationend', () => canvas.remove(), { once: true });
+      el.style.left = (cx - s / 2) + 'px';
+      el.style.top = (cy - s / 2) + 'px';
+      el.style.width = s + 'px';
+      el.style.height = s + 'px';
+      bubblesEl.appendChild(el);
+      el.addEventListener('animationend', () => el.remove(), { once: true });
     }
 
     function popBubble(num) {
       const state = bubbleStates.get(num);
       if (!state || state.popped || state.popping) return false;
       if (gameCompleting) return false;
-
       state.popping = true;
       const el = bubbleEls.get(num);
       if (!el) return false;
 
       playPop((num % 5) - 2);
       haptic(8);
-
       const rect = el.getBoundingClientRect();
       const stageRect = stage.getBoundingClientRect();
       spawnBurst(
@@ -594,7 +568,6 @@ export default function BubbleWrapFidget() {
         rect.top - stageRect.top + rect.height / 2,
         rect.width,
       );
-
       el.classList.add('popping');
       el.addEventListener('animationend', () => {
         state.popping = false;
@@ -610,7 +583,7 @@ export default function BubbleWrapFidget() {
       return true;
     }
 
-    /* ---------- Sheet refill ---------- */
+    /* ── Sheet refill ──────────────────────────────────────────── */
     let refillScheduled = false;
     function allBubblesPopped() {
       if (!layout) return false;
@@ -646,369 +619,350 @@ export default function BubbleWrapFidget() {
       playSwoosh();
     }
 
-    /* ---------- Selection & games tray ---------- */
+    /* ── Selection state ───────────────────────────────────────── */
     let currentGame = 0;
     let currentSelections = [];
     const allGames = [];
     let viewedGameIdx = 0;
-
-    const BALL_IMAGES = [
-      '/img/ball_purple.png',
-      '/img/ball_blue.png',
-      '/img/ball_green.png',
-      '/img/ball_yellow.png',
-      '/img/ball_orange.png',
-      '/img/ball_pink.png',
-    ];
-    const HOT_NUMBERS = new Set([3, 7, 11, 17, 23, 27, 33, 42]);
-    const COLD_NUMBERS = new Set([1, 9, 14, 19, 25, 31, 36, 41]);
-    function isHotNumber(n) { return HOT_NUMBERS.has(n); }
-    function temperatureClass(n) {
-      if (HOT_NUMBERS.has(n)) return 'is-hot';
-      if (COLD_NUMBERS.has(n)) return 'is-cold';
-      return 'is-neutral';
-    }
-
-    function makeSlot(value, isActiveRow) {
-      const slot = document.createElement('div');
-      slot.className = 'slot';
-      if (value != null) {
-        slot.classList.add('filled');
-        slot.classList.add(temperatureClass(value));
-        const idx = Math.abs(value - 1) % BALL_IMAGES.length;
-        slot.style.setProperty('--ball-img', `url('${BALL_IMAGES[idx]}')`);
-        const num = document.createElement('span');
-        num.className = 'num';
-        num.textContent = value;
-        slot.appendChild(num);
-      } else if (isActiveRow) {
-        slot.classList.add('active-row');
-      }
-      return slot;
-    }
-
-    function rowSlotsFor(idx) {
-      const isActive = idx === currentGame;
-      const nums = isActive ? currentSelections : (allGames[idx] || []);
-      return { isActive, nums };
-    }
-
-    function renderTray(entryAnim = 'appear') {
-      const { isActive, nums } = rowSlotsFor(viewedGameIdx);
-
-      visibleRowEl.innerHTML = '';
-      visibleRowEl.classList.remove('appear', 'row-slide-in', 'row-out');
-      void visibleRowEl.offsetWidth;
-      visibleRowEl.classList.add(entryAnim);
-      for (let i = 0; i < NUMBERS_PER_GAME; i++) {
-        const slot = makeSlot(nums[i], isActive);
-        visibleRowEl.appendChild(slot);
-      }
-
-      const pct = (currentSelections.length / NUMBERS_PER_GAME) * 100;
-      trayProgressBarEl.style.width = pct + '%';
-
-      const completed = currentGame;
-      trayCountEl.textContent = `${completed} GAME${completed === 1 ? '' : 'S'}`;
-      trayPageNumEl.textContent = `...${viewedGameIdx + 1}`;
-
-      trayUpEl.disabled = viewedGameIdx <= 0;
-      trayDownEl.disabled = viewedGameIdx >= currentGame;
-
-      if (ctaPlayEl) {
-        ctaPlayEl.classList.toggle('is-disabled',
-          currentGame === 0 && currentSelections.length === 0);
-      }
-    }
-
+    let totalGames = DEFAULT_GAMES;
     let gameCompleting = false;
 
-    /* Fired when a row/game completes: pops the "GAME N+1" banner up
-       from behind the tray, and sends the lotto-man on a single arcing
-       jump from off-screen left to off-screen right. Both clear their
-       active class on animationend so they can re-fire next completion. */
-    function triggerGameCompleteCelebration() {
-      if (gameMessageEl && gameMessageTextEl) {
-        gameMessageTextEl.textContent = `GAME ${currentGame + 2}`;
-        if (trayEl) {
-          const h = trayEl.getBoundingClientRect().height;
-          if (h > 0) gameMessageEl.style.setProperty('--tray-h', h + 'px');
+    function refreshPill() {
+      if (ctaPillCountEl) {
+        ctaPillCountEl.textContent = `${viewedGameIdx + 1}/${totalGames}`;
+      }
+      if (gameLabelEl) {
+        gameLabelEl.textContent = `Game ${viewedGameIdx + 1}/${totalGames}`;
+      }
+      if (ctaPillProgressEl) {
+        /* pathLength="100" on the SVG rect normalises the perimeter to
+           100 units, so the visible stroke length == the row's
+           percentage complete. dashoffset 100 → empty, 0 → full ring. */
+        const pct = Math.max(0, Math.min(100,
+          (currentSelections.length / NUMBERS_PER_GAME) * 100));
+        ctaPillProgressEl.style.strokeDasharray = '100 100';
+        ctaPillProgressEl.style.strokeDashoffset = String(100 - pct);
+      }
+    }
+
+    /* ── Three.js ball-tray scene ──────────────────────────────── */
+    /* Single shared WebGL scene with a pool of 7 ball meshes (one per
+       slot in the current game). Textures are baked per number, cached,
+       and swapped onto the pool meshes on each pop. Mesh positions
+       update from the slot rect measurements so the canvas can stretch
+       responsively without realigning balls manually. */
+    const ballScene = {
+      renderer: null,
+      camera:   null,
+      scene:    null,
+      geometry: null,
+      meshes:   [],      // 7 pool meshes
+      slotCenters: [],   // [{x, y, r}, ...] in canvas pixel coords (top-left origin)
+      animations: [],    // active spin-in/-out anims
+      texCache:    new Map(),
+      ballRadius:  22,
+      width:  0,
+      height: 0,
+      raf:    null,
+    };
+    function getBallTexture(num) {
+      let t = ballScene.texCache.get(num);
+      if (t) return t;
+      t = makeBallTexture(num);
+      ballScene.texCache.set(num, t);
+      return t;
+    }
+    function initBallScene() {
+      if (!ballCanvas || !ringsEl) return;
+      const renderer = new THREE.WebGLRenderer({
+        canvas: ballCanvas, antialias: true, alpha: true,
+      });
+      renderer.setClearColor(0x000000, 0);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      const scene = new THREE.Scene();
+      // No lights — MeshBasicMaterial below is unlit, so the texture's
+      // raw colour shows through unattenuated. Any lit material (Std,
+      // Lambert, Phong) muddies the hue regardless of ambient strength
+      // because diffuse shading multiplies by a normal·light dot product
+      // that's <1 for most surface fragments. The flat look this gives
+      // up some 3D depth, but matches the "vibrant hex-code" spec.
+      // Camera frustum gets sized to the canvas pixel dims in
+      // resizeBallScene() so 1 world unit = 1 CSS pixel; the Y axis is
+      // flipped (top = +H/2) to match DOM coordinates.
+      const camera = new THREE.OrthographicCamera(0, 1, 1, 0, 0.1, 100);
+      camera.position.z = 50;
+      const geometry = new THREE.SphereGeometry(1, 32, 32);
+      ballScene.renderer = renderer;
+      ballScene.scene = scene;
+      ballScene.camera = camera;
+      ballScene.geometry = geometry;
+      // Build a pool of 7 meshes (max balls visible in a single game).
+      // They're created once with MeshStandardMaterial so the same
+      // texture-swap path serves both first-render and re-render after
+      // game completion.
+      for (let i = 0; i < NUMBERS_PER_GAME; i++) {
+        const mat = new THREE.MeshBasicMaterial({ map: null });
+        const mesh = new THREE.Mesh(geometry, mat);
+        mesh.visible = false;
+        scene.add(mesh);
+        ballScene.meshes.push(mesh);
+      }
+      resizeBallScene();
+      tickBallScene();
+    }
+    function resizeBallScene() {
+      if (!ballScene.renderer || !ballCanvas) return;
+      // The canvas spans the whole body via CSS `position:absolute;
+      // inset:0`, so its bounding rect is the body's content area.
+      // All ball positions (slots + bubble sources) are computed in
+      // this same canvas-local coordinate space so the WebGL scene
+      // can animate balls anywhere from stage to tray seamlessly.
+      const rect = ballCanvas.getBoundingClientRect();
+      const w = Math.max(1, Math.round(rect.width));
+      const h = Math.max(1, Math.round(rect.height));
+      ballScene.width = w;
+      ballScene.height = h;
+      ballScene.canvasRect = rect;
+      ballScene.renderer.setSize(w, h, false);
+      const cam = ballScene.camera;
+      cam.left = 0;
+      cam.right = w;
+      cam.top = h;       // Y-up world; positionToWorld flips DOM y
+      cam.bottom = 0;
+      cam.near = 0.1;
+      cam.far = 1000;
+      cam.updateProjectionMatrix();
+      // Snapshot each ring centre & radius in canvas-local pixel coords.
+      ballScene.slotCenters = ringEls.map(ring => {
+        const r = ring.getBoundingClientRect();
+        return {
+          x: r.left - rect.left + r.width / 2,
+          y: r.top  - rect.top  + r.height / 2,
+          r: Math.min(r.width, r.height) / 2,
+        };
+      });
+      // Ball nearly fills the ring; 1px margin avoids subpixel clipping.
+      const baseR = ballScene.slotCenters[0]?.r || 22;
+      ballScene.ballRadius = Math.max(8, baseR - 1);
+    }
+
+    // Convert any DOM element's centre to canvas-local pixel coords.
+    function elementCenter(el) {
+      if (!el || !ballCanvas) return null;
+      const r = el.getBoundingClientRect();
+      const c = ballCanvas.getBoundingClientRect();
+      return {
+        x: r.left - c.left + r.width / 2,
+        y: r.top  - c.top  + r.height / 2,
+      };
+    }
+    function bubbleScreenPos(num) {
+      return elementCenter(bubbleEls.get(num));
+    }
+    function tickBallScene() {
+      if (!ballScene.renderer) return;
+      const now = performance.now();
+      // Process animations; mesh visibility / position derived per-frame.
+      for (let i = ballScene.animations.length - 1; i >= 0; i--) {
+        const anim = ballScene.animations[i];
+        const t = Math.min(1, (now - anim.start) / anim.duration);
+        const eased = easeOutCubic(t);
+        const mesh = ballScene.meshes[anim.slotIdx];
+        if (!mesh) {
+          ballScene.animations.splice(i, 1);
+          continue;
         }
+        if (anim.kind === 'drop-in') {
+          const slot = ballScene.slotCenters[anim.slotIdx];
+          if (!slot) {
+            ballScene.animations.splice(i, 1);
+            continue;
+          }
+          // Source = bubble centre (canvas-local px); target = slot
+          // centre. Y axis is gravity-accelerated (t²) for a physical
+          // fall; X uses easeOutCubic for a smooth lateral glide.
+          // Ball tumbles on X axis many times during the fall, easing
+          // into FINAL_ROT_X so the number lands forward-facing.
+          const targetX = slot.x;
+          const targetY = ballScene.height - slot.y;
+          const startX  = anim.sourceX;
+          const startY  = ballScene.height - anim.sourceY;
+          const yProg = t * t;             // accelerating fall
+          const xProg = eased;             // smooth lateral
+          mesh.position.x = startX + (targetX - startX) * xProg;
+          mesh.position.y = startY + (targetY - startY) * yProg;
+          mesh.position.z = 0;
+          mesh.scale.setScalar(ballScene.ballRadius);
+          const tumble = -SPIN_REVOLUTIONS * Math.PI * 2 * (1 - eased);
+          mesh.rotation.set(FINAL_ROT_X + tumble, FINAL_ROT_Y, 0);
+          mesh.visible = true;
+          if (t >= 1) {
+            mesh.position.set(targetX, targetY, 0);
+            mesh.rotation.set(FINAL_ROT_X, FINAL_ROT_Y, 0);
+            ballScene.animations.splice(i, 1);
+          }
+        } else if (anim.kind === 'slide-up-fade') {
+          const slot = ballScene.slotCenters[anim.slotIdx];
+          if (!slot) {
+            mesh.visible = false;
+            ballScene.animations.splice(i, 1);
+            continue;
+          }
+          // Active row balls drift up out of the slot (toward the bubble
+          // frame) and fade their opacity to 0. The CSS ghost row picks
+          // up the visual at the same screen position with a faint
+          // blurred number for the persistent ghost (handed off when
+          // this anim ends).
+          const baseX  = slot.x;
+          const baseY  = ballScene.height - slot.y;
+          const upDist = ballScene.ballRadius * 2.4;
+          mesh.position.x = baseX;
+          mesh.position.y = baseY + upDist * eased;
+          mesh.scale.setScalar(ballScene.ballRadius);
+          mesh.material.opacity = 1 - eased;
+          mesh.material.transparent = true;
+          if (t >= 1) {
+            mesh.visible = false;
+            mesh.material.transparent = false;
+            mesh.material.opacity = 1;
+            ballScene.animations.splice(i, 1);
+          }
+        }
+      }
+      ballScene.renderer.render(ballScene.scene, ballScene.camera);
+      ballScene.raf = requestAnimationFrame(tickBallScene);
+    }
+    function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+
+    /* Public ball-scene API used by game flow */
+    function spawnBallInSlot(slotIdx, number, sourceX, sourceY) {
+      const mesh = ballScene.meshes[slotIdx];
+      if (!mesh) return;
+      const tex = getBallTexture(number);
+      if (mesh.material.map !== tex) {
+        mesh.material.map = tex;
+        mesh.material.needsUpdate = true;
+      }
+      // Track number on the mesh so the font-load rebake (below) can
+      // refresh visible balls once SharpGrotesk loads.
+      mesh.userData.number = number;
+      mesh.material.opacity = 1;
+      mesh.material.transparent = false;
+      mesh.visible = true;
+      // Fallback: if we have no source position (e.g. autopop debug or
+      // missing bubble), start at the slot's own X just above the slot,
+      // so the animation still plays sanely without referring to a
+      // bubble's screen position.
+      const slot = ballScene.slotCenters[slotIdx];
+      const fallbackY = slot ? Math.max(0, slot.y - ballScene.ballRadius * 4) : 0;
+      ballScene.animations.push({
+        kind: 'drop-in',
+        slotIdx,
+        number,
+        sourceX: Number.isFinite(sourceX) ? sourceX : (slot ? slot.x : 0),
+        sourceY: Number.isFinite(sourceY) ? sourceY : fallbackY,
+        start: performance.now(),
+        duration: SPIN_DURATION_MS,
+      });
+    }
+    function clearAllBalls(animate = true) {
+      const now = performance.now();
+      for (let i = 0; i < ballScene.meshes.length; i++) {
+        const mesh = ballScene.meshes[i];
+        if (!mesh.visible) continue;
+        if (animate) {
+          ballScene.animations.push({
+            kind: 'slide-up-fade',
+            slotIdx: i,
+            start: now + i * 25,
+            duration: 380,
+          });
+        } else {
+          mesh.visible = false;
+        }
+      }
+    }
+
+    // Populate the CSS ghost row with the completed game's numbers.
+    // Each ghost is a circular span with the ball's hue as its fill,
+    // visible just above the active slot row with a CSS blur + opacity.
+    function populateGhostRow(nums) {
+      if (!ghostRowEl) return;
+      ghostRowEl.innerHTML = '';
+      for (const n of nums) {
+        const h = ballHue(n);
+        const div = document.createElement('div');
+        div.className = 'ghost';
+        div.textContent = String(n);
+        div.style.background =
+          `radial-gradient(circle at 35% 35%, hsl(${h}, 80%, 55%), hsl(${h}, 85%, 32%))`;
+        div.style.color = numTextColor(h);
+        ghostRowEl.appendChild(div);
+      }
+    }
+
+    /* ── Game flow ─────────────────────────────────────────────── */
+    function triggerGameCompleteCelebration() {
+      if (!gameMessageEl || !gameMessageTextEl) return;
+      gameMessageTextEl.textContent = `GAME ${currentGame + 2}`;
+      if (trayEl) {
+        const h = trayEl.getBoundingClientRect().height;
+        if (h > 0) gameMessageEl.style.setProperty('--tray-h', h + 'px');
+      }
+      gameMessageEl.classList.remove('is-active');
+      void gameMessageEl.offsetWidth;
+      gameMessageEl.classList.add('is-active');
+      gameMessageEl.addEventListener('animationend', function onEnd() {
         gameMessageEl.classList.remove('is-active');
-        void gameMessageEl.offsetWidth;
-        gameMessageEl.classList.add('is-active');
-        gameMessageEl.addEventListener('animationend', function onMsgEnd() {
-          gameMessageEl.classList.remove('is-active');
-          gameMessageEl.removeEventListener('animationend', onMsgEnd);
-        });
-      }
-      if (lottoManEl) {
-        const lowJump = !!(trayEl && trayEl.classList.contains('is-collapsed'));
-        const jumpClass = lowJump ? 'is-jumping-low' : 'is-jumping';
-        lottoManEl.classList.remove('is-jumping', 'is-jumping-low');
-        void lottoManEl.offsetWidth;
-        lottoManEl.classList.add(jumpClass);
-        lottoManEl.addEventListener('animationend', function onJumpEnd() {
-          lottoManEl.classList.remove('is-jumping', 'is-jumping-low');
-          lottoManEl.removeEventListener('animationend', onJumpEnd);
-        });
-      }
+        gameMessageEl.removeEventListener('animationend', onEnd);
+      });
     }
 
     function addSelected(num) {
       currentSelections.push(num);
       viewedGameIdx = currentGame;
+      const slotIdx = currentSelections.length - 1;
+      // Spawn the ball at the bubble's screen position so it appears
+      // to fall out of the popped bubble down to its slot.
+      const src = bubbleScreenPos(num);
+      spawnBallInSlot(slotIdx, num, src?.x, src?.y);
 
       if (currentSelections.length >= NUMBERS_PER_GAME) {
         gameCompleting = true;
-        allGames[currentGame] = [...currentSelections];
-        renderTray();
-        if (modalOpen) renderModal();
+        const completedRow = [...currentSelections];
+        allGames[currentGame] = completedRow;
         playRowComplete();
         triggerGameCompleteCelebration();
-
-        visibleRowEl.classList.remove('appear', 'row-slide-in');
-        void visibleRowEl.offsetWidth;
-        visibleRowEl.classList.add('row-out');
-        visibleRowEl.addEventListener('animationend', function onSlideOut(e) {
-          if (e.animationName !== 'row-slide-out') return;
-          visibleRowEl.removeEventListener('animationend', onSlideOut);
-          currentGame++;
-          currentSelections = [];
-          viewedGameIdx = currentGame;
-          renderTray('row-slide-in');
-          if (modalOpen) renderModal();
-          gameCompleting = false;
-        });
+        // Let the last ball settle, then slide the row up + fade out
+        // while the CSS ghost row picks up the static visualisation
+        // just above the active slot row.
+        setTimeout(() => {
+          clearAllBalls(true);
+          populateGhostRow(completedRow);
+          setTimeout(() => {
+            currentGame++;
+            currentSelections = [];
+            viewedGameIdx = currentGame;
+            refreshPill();
+            gameCompleting = false;
+            if (autoPlayQueue > 0) {
+              autoPlayQueue--;
+              if (autoPlayQueue > 0 || currentGame < totalGames) {
+                setTimeout(autoFillCurrentRow, 360);
+              }
+            }
+          }, 420);
+        }, SPIN_DURATION_MS + 80);
+        refreshPill();
         return;
       }
-
-      renderTray();
-      if (modalOpen) renderModal();
+      refreshPill();
     }
 
-    trayUpEl.addEventListener('click', () => {
-      if (viewedGameIdx > 0) {
-        viewedGameIdx--;
-        renderTray();
-      }
-    }, { signal });
-    trayDownEl.addEventListener('click', () => {
-      if (viewedGameIdx < currentGame) {
-        viewedGameIdx++;
-        renderTray();
-      }
-    }, { signal });
-
-    /* Swipe up/down on the slot row mirrors the trayUp/trayDown buttons.
-       Calling .click() on a disabled button is a no-op, so the at-edge
-       cases (no previous/next row) are handled automatically. */
-    const SWIPE_VERTICAL_THRESHOLD = 30;  // px of vertical motion to fire a swipe
-    const TAP_MAX_MOVEMENT = 10;          // total motion below this stays a tap
-    let swipeStart = null;
-    let swipeMaxMove = 0;
-
-    visibleRowEl.addEventListener('pointerdown', (ev) => {
-      swipeStart = { x: ev.clientX, y: ev.clientY, pointerId: ev.pointerId };
-      swipeMaxMove = 0;
-      try { visibleRowEl.setPointerCapture(ev.pointerId); } catch (_) {}
-    }, { signal });
-
-    visibleRowEl.addEventListener('pointermove', (ev) => {
-      if (!swipeStart || ev.pointerId !== swipeStart.pointerId) return;
-      const dx = ev.clientX - swipeStart.x;
-      const dy = ev.clientY - swipeStart.y;
-      const dist = Math.hypot(dx, dy);
-      if (dist > swipeMaxMove) swipeMaxMove = dist;
-    }, { signal });
-
-    const endSwipe = (ev) => {
-      if (!swipeStart || ev.pointerId !== swipeStart.pointerId) return;
-      const start = swipeStart;
-      const totalMove = swipeMaxMove;
-      const dx = ev.clientX - start.x;
-      const dy = ev.clientY - start.y;
-      swipeStart = null;
-      try { visibleRowEl.releasePointerCapture(start.pointerId); } catch (_) {}
-
-      if (totalMove < TAP_MAX_MOVEMENT) return;            // tap, not swipe
-      if (Math.abs(dy) < SWIPE_VERTICAL_THRESHOLD) return; // not enough vertical
-      if (Math.abs(dy) < Math.abs(dx)) return;             // mostly horizontal
-      if (dy < 0) trayUpEl.click();
-      else trayDownEl.click();
-    };
-    visibleRowEl.addEventListener('pointerup', endSwipe, { signal });
-    visibleRowEl.addEventListener('pointercancel', endSwipe, { signal });
-
-    /* ---------- Modal ---------- */
-    let modalOpen = false;
-    function openModal() {
-      modalOpen = true;
-      modalBackdropEl.classList.add('visible');
-      renderModal();
-    }
-    function closeModal() {
-      modalOpen = false;
-      modalBackdropEl.classList.remove('visible');
-    }
-    function gameHeat(nums) {
-      if (!nums || nums.length < NUMBERS_PER_GAME) return null;
-      const hotCount = nums.reduce((acc, n) => acc + (isHotNumber(n) ? 1 : 0), 0);
-      return hotCount >= 2 ? 'hot' : 'cold';
-    }
-
-    const selectedGames = new Set();
-    let modalFilter = 'all';     // 'all' | 'hot' | 'cold'
-    let modalSort = null;        // null | 'asc' (cold→hot) | 'desc' (hot→cold)
-    const modalSortBtnEl = document.getElementById('modalSortBtn');
-
-    function syncActionBar() {
-      modalEl.classList.toggle('has-action-bar', selectedGames.size > 0);
-    }
-
-    function renderModal() {
-      modalRowsEl.innerHTML = '';
-      const totalRows = currentGame + 1;
-
-      // Build the order in which to render rows. Default is chronological;
-      // sort cycles through asc (cold→hot) and desc (hot→cold). Incomplete
-      // games (no heat) always sort to the end so they don't get jumbled
-      // among rated games.
-      const indices = [];
-      for (let g = 0; g < totalRows; g++) indices.push(g);
-      if (modalSort) {
-        const heatRank = (g) => {
-          const isActive = g === currentGame;
-          const nums = isActive ? currentSelections : allGames[g];
-          const heat = gameHeat(nums);
-          if (heat === 'hot') return 2;
-          if (heat === 'cold') return 1;
-          return 0;
-        };
-        indices.sort((a, b) => {
-          const ra = heatRank(a);
-          const rb = heatRank(b);
-          if (ra === 0 && rb !== 0) return 1;
-          if (rb === 0 && ra !== 0) return -1;
-          if (ra === rb) return a - b; // stable within same heat
-          return modalSort === 'asc' ? ra - rb : rb - ra;
-        });
-      }
-
-      for (const g of indices) {
-        const isActive = g === currentGame;
-        const nums = isActive ? currentSelections : allGames[g];
-        const heat = gameHeat(nums);
-
-        if (modalFilter !== 'all' && heat !== modalFilter) continue;
-
-        const row = document.createElement('div');
-        row.className = 'modal-row';
-
-        const labelCell = document.createElement('div');
-        labelCell.className = 'modal-row-label';
-
-        const labelText = document.createElement('span');
-        labelText.textContent = `G${g + 1}`;
-        if (heat) {
-          const heatDot = document.createElement('span');
-          heatDot.className = `modal-row-heat heat-${heat}`;
-          heatDot.title = heat;
-          labelText.appendChild(heatDot);
-        }
-        labelCell.appendChild(labelText);
-
-        const cb = document.createElement('input');
-        cb.type = 'checkbox';
-        cb.className = 'modal-checkbox';
-        cb.checked = selectedGames.has(g);
-        cb.disabled = isActive && (!nums || nums.length < NUMBERS_PER_GAME);
-        cb.addEventListener('change', () => {
-          if (cb.checked) selectedGames.add(g);
-          else selectedGames.delete(g);
-          syncActionBar();
-        });
-        labelCell.appendChild(cb);
-
-        row.appendChild(labelCell);
-
-        for (let i = 0; i < NUMBERS_PER_GAME; i++) {
-          row.appendChild(makeSlot(nums[i], isActive));
-        }
-        modalRowsEl.appendChild(row);
-      }
-
-      syncActionBar();
-
-      requestAnimationFrame(() => {
-        modalRowsEl.scrollTop = modalRowsEl.scrollHeight;
-      });
-    }
-
-    modalFiltersEl.addEventListener('click', (ev) => {
-      const btn = ev.target.closest('.filter-pill');
-      if (!btn) return;
-      modalFilter = btn.dataset.heat;
-      modalFiltersEl.querySelectorAll('.filter-pill').forEach((p) => {
-        p.classList.toggle('active', p.dataset.heat === modalFilter);
-      });
-      renderModal();
-    }, { signal });
-
-    if (modalSortBtnEl) {
-      modalSortBtnEl.addEventListener('click', () => {
-        // Cycle: off → asc → desc → off
-        if (modalSort === null) modalSort = 'asc';
-        else if (modalSort === 'asc') modalSort = 'desc';
-        else modalSort = null;
-        modalSortBtnEl.classList.toggle('asc', modalSort === 'asc');
-        modalSortBtnEl.classList.toggle('desc', modalSort === 'desc');
-        renderModal();
-      }, { signal });
-    }
-
-    modalPlayBtnEl.addEventListener('click', () => {
-      const n = selectedGames.size;
-      if (n === 0) return;
-      showToast(`Played ${n} game${n === 1 ? '' : 's'}!`);
-      selectedGames.clear();
-      renderModal();
-    }, { signal });
-
-    /* The tray's NE-arrow button now toggles the panel between expanded
-       (default) and collapsed (only the head strip visible) instead of
-       opening the modal. The modal is still reachable via the
-       PLAY NUMBERS CTA below — but that button is hidden in the
-       collapsed state, so the modal is only accessible when expanded. */
-    function syncTrayToggleAria() {
-      const collapsed = trayEl.classList.contains('is-collapsed');
-      trayModalBtnEl.setAttribute(
-        'aria-label', collapsed ? 'Expand panel' : 'Collapse panel');
-      trayModalBtnEl.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-    }
-    syncTrayToggleAria();
-    let trayToggleRebuildTimer = null;
-    trayModalBtnEl.addEventListener('click', () => {
-      trayEl.classList.toggle('is-collapsed');
-      syncTrayToggleAria();
-      // Re-layout bubbles after the panel transition (300ms) so the
-      // grid fills the freed viewport space (or shrinks when expanding).
-      clearTimeout(trayToggleRebuildTimer);
-      trayToggleRebuildTimer = setTimeout(rebuild, 320);
-    }, { signal });
-    modalCloseEl.addEventListener('click', closeModal, { signal });
-    modalBackdropEl.addEventListener('click', (ev) => {
-      if (ev.target === modalBackdropEl) closeModal();
-    }, { signal });
-    window.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Escape' && modalOpen) closeModal();
-    }, { signal });
-
-    // PLAY NUMBERS now opens the modal — the actual "play" action lives on
-    // the modal's own PLAY NUMBERS button after games are selected.
-    ctaPlayEl.addEventListener('click', openModal, { signal });
-
-    ctaResetEl.addEventListener('click', () => {
+    /* ── Bottom controls ───────────────────────────────────────── */
+    // X — reset current row (un-pop selected bubbles and clear balls)
+    if (ctaExitEl) ctaExitEl.addEventListener('click', () => {
+      autoPlayQueue = 0;
       if (currentSelections.length === 0) {
         showToast('Nothing to reset.');
         return;
@@ -1024,172 +978,234 @@ export default function BubbleWrapFidget() {
         }
       }
       currentSelections = [];
-      viewedGameIdx = currentGame;
-      renderTray();
-      if (modalOpen) renderModal();
+      clearAllBalls(true);
+      refreshPill();
     }, { signal });
 
-    if (ctaRandomiseEl) {
-      ctaRandomiseEl.addEventListener('click', onRandomise, { signal });
-    }
-
-    ctaHelpEl.addEventListener('click', () => {
-      showToast('Pop bubbles to pick numbers. 7 per ticket.');
-    }, { signal });
-
-    function onRandomise() {
+    // Pill (>> ) — auto-pops enough bubbles to complete the current row
+    // (one game = NUMBERS_PER_GAME bubbles). Re-tap to advance another
+    // row; for filling all remaining games at once, use Fast select.
+    if (ctaPillEl) ctaPillEl.addEventListener('click', () => {
       ensureAudio();
+      autoFillCurrentRow();
+    }, { signal });
+
+    /* "Fast select" — fill the current row and queue up enough rows
+       to complete `totalGames`. autoPlayQueue is decremented after each
+       row completes (in addSelected) so successive rows auto-trigger. */
+    let autoPlayQueue = 0;
+    if (ctaFastSelectEl) ctaFastSelectEl.addEventListener('click', () => {
+      ensureAudio();
+      const remaining = Math.max(0, totalGames - currentGame - 1);
+      autoPlayQueue = remaining;
+      autoFillCurrentRow();
+    }, { signal });
+
+    function autoFillCurrentRow() {
       const needed = NUMBERS_PER_GAME - currentSelections.length;
+      if (needed <= 0) return;
       const available = [];
-      for (let n = 1; n <= TOTAL_NUMBERS; n++) {
-        const s = bubbleStates.get(n);
-        if (s && !s.popped && !s.popping && !currentSelections.includes(n)) {
-          available.push(n);
+      for (const b of layout.bubbles) {
+        const s = bubbleStates.get(b.num);
+        if (s && !s.popped && !s.popping && !currentSelections.includes(b.num)) {
+          available.push(b.num);
         }
       }
       if (available.length < needed) return;
+      // Fisher-Yates partial shuffle (only need the first `needed` picks)
       for (let i = available.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [available[i], available[j]] = [available[j], available[i]];
       }
       const picks = available.slice(0, needed);
-      picks.forEach((n, k) => setTimeout(() => popBubble(n), k * 90));
+      picks.forEach((n, k) => setTimeout(() => popBubble(n), k * 110));
     }
 
-    /* ---------- Toast ---------- */
+    /* ── Toast ─────────────────────────────────────────────────── */
     let toastTimer = null;
     function showToast(msg) {
+      if (!toastEl) return;
       toastEl.textContent = msg;
       toastEl.classList.add('visible');
       clearTimeout(toastTimer);
       toastTimer = setTimeout(() => toastEl.classList.remove('visible'), 1800);
     }
 
-    /* ---------- Resize & boot ---------- */
+    /* ── Boot + resize ─────────────────────────────────────────── */
     let layout;
-    function positionSheetEdges(layout) {
-      const top = stage.querySelector('.sheet-edge-top');
-      const bot = stage.querySelector('.sheet-edge-bottom');
-      // Strips overlap into the bubble grid by 10px so the visible bubble
-      // tops/bottoms (which sit inside transparent PNG padding) sit closer
-      // to the wrap edges.
-      if (top) top.style.top    = (layout.gridTopY    - STRIP_H + 10) + 'px';
-      if (bot) bot.style.top    = (layout.gridBottomY - 10) + 'px';
-    }
     function rebuild() {
       layout = computeLayout();
       renderBubbles(layout);
-      positionSheetEdges(layout);
     }
-    window.addEventListener('resize', rebuild, { signal });
+    window.addEventListener('resize', () => {
+      rebuild();
+      resizeBallScene();
+    }, { signal });
 
     rebuild();
-    spawnClouds();
-    renderTray();
+    initBallScene();
+    refreshPill();
+
+    /* Rebake ball textures once SharpGrotesk Medium has loaded. Canvas
+       2d uses the OS fallback if the font isn't ready when fillText is
+       called, so any texture baked during the initial paint (e.g. a
+       ball spawned via ?autopop= before the .otf finishes downloading)
+       would freeze in the fallback font. After the font resolves we
+       drop the cache and re-bake the texture for every currently-
+       visible mesh so they swap in-place. */
+    if (typeof document !== 'undefined' && document.fonts && document.fonts.load) {
+      document.fonts.load('500 70px "SharpGrotesk"').then(() => {
+        if (signal.aborted) return;
+        for (const tex of ballScene.texCache.values()) tex.dispose();
+        ballScene.texCache.clear();
+        for (const mesh of ballScene.meshes) {
+          const num = mesh.userData?.number;
+          if (mesh.visible && num != null) {
+            mesh.material.map?.dispose();
+            mesh.material.map = getBallTexture(num);
+            mesh.material.needsUpdate = true;
+          }
+        }
+      }).catch(() => {});
+    }
+
+    /* Debug: ?autopop=N auto-pops a row after a short delay so the
+       3D ball spin-in animation can be eyeballed without manual
+       clicks. Safe to leave in — the URL flag is opt-in. */
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const autopop = parseInt(params.get('autopop') || '', 10);
+      if (Number.isFinite(autopop) && autopop > 0) {
+        setTimeout(() => {
+          const targets = layout.bubbles
+            .slice(0, Math.min(autopop, NUMBERS_PER_GAME))
+            .map(b => b.num);
+          targets.forEach((n, i) => setTimeout(() => popBubble(n), i * 150));
+        }, 700);
+      }
+    }
 
     return () => {
       ac.abort();
-      // Tear down dynamically inserted nodes so a strict-mode remount
-      // doesn't double-stack bubbles, clouds, or the haptic switch.
       if (bubblesEl) bubblesEl.innerHTML = '';
-      if (cloudLayerEl) cloudLayerEl.innerHTML = '';
-      const rand = stage && stage.querySelector('.randomise');
-      if (rand) rand.remove();
       if (_hapticSwitch && _hapticSwitch.label.parentNode) {
         _hapticSwitch.label.parentNode.removeChild(_hapticSwitch.label);
       }
-      // Stop any in-flight audio
       if (audioCtx) audioCtx.close().catch(() => {});
+      if (ballScene.raf) cancelAnimationFrame(ballScene.raf);
+      for (const mesh of ballScene.meshes) {
+        mesh.material?.dispose();
+      }
+      ballScene.geometry?.dispose();
+      for (const tex of ballScene.texCache.values()) tex.dispose();
+      ballScene.renderer?.dispose();
     };
   }, []);
 
   return (
     <>
-      <div className="intro-overlay" id="introOverlay">
-        <div className="intro-panel">
-          <div className="intro-cloud-bg" />
-          <div className="intro-logo">
-            <div className="intro-shadow" />
-            <div className="intro-rainbow" />
-            <div className="intro-the" />
-            <div className="intro-lott" />
-          </div>
-          <div className="intro-emoji-burst" id="introEmojiBurst" />
-        </div>
-      </div>
-
       <div className="stage" id="stage">
-        <div className="lotto-man-arc" id="lottoManArc">
-          <div className="lotto-man-jump-img" />
-        </div>
         <div id="cloudLayer" />
-        <div className="sheet-edge sheet-edge-top" />
+        <div id="bubbleFrame" />
         <div id="bubbles" />
-        <div className="sheet-edge sheet-edge-bottom" />
         <div className="status-spacer" />
         <div className="toast" id="toast" />
       </div>
 
       <div className="tray">
-        <span className="tray-corner-bl" />
-        <span className="tray-corner-br" />
-        <div className="tray-head">
-          <button
-            className="tray-modal-btn"
-            id="trayModalBtn"
-            type="button"
-            aria-label="View all games"
-          />
-          <div className="tray-progress" aria-hidden="true">
-            <div className="tray-progress-bar" id="trayProgressBar" />
-          </div>
-          <span className="tray-page-num" id="trayPageNum">
-            ...1
+        {/* Ghost row of fading numbers from the previous game. Each game
+            completion replaces its contents. Positioned absolutely so
+            it overlaps the area between the bubble frame's bottom and
+            the current slot row. Behind it sits the gradient overlay
+            that fades it into the frame's shadow. */}
+        <div className="tray-ghost-row" id="trayGhostRow" aria-hidden="true" />
+        <div className="tray-ghost-gradient" aria-hidden="true" />
+
+        {/* Label strip — YOUR NUMBERS | Game N/M | PB — sits over the
+            ghost gradient, just above the active slot row. */}
+        <div className="tray-labels">
+          <span className="tray-label tray-label-left">YOUR NUMBERS</span>
+          <span className="tray-label tray-label-mid" id="trayGameLabel">
+            Game 1/20
           </span>
+          <span className="tray-label tray-label-right">PB</span>
         </div>
-        <div className="tray-label" id="trayCount">
-          0 GAMES
-        </div>
-        <div className="tray-row-wrapper">
-          <div className="tray-nav">
-            <button
-              className="tray-arrow tray-up"
-              id="trayUp"
-              type="button"
-              aria-label="Previous game"
-            />
-            <button
-              className="tray-arrow tray-down"
-              id="trayDown"
-              type="button"
-              aria-label="Next game"
-            />
+
+        <div className="tray-balls">
+          <div className="tray-rings" id="trayRings">
+            {Array.from({ length: NUMBERS_PER_GAME }, (_, i) => (
+              <div className="ring" key={i} />
+            ))}
           </div>
-          <div className="game-row" id="visibleRow" />
         </div>
+
+        {/* Stub kept in DOM so legacy CSS selectors / future swipe rewiring
+            don't error if they look for #visibleRow. */}
+        <div id="visibleRow" aria-hidden="true" />
+
         <div className="tray-ctas">
+          {/* Three-dot menu (formerly the X reset). Tapping resets the
+              currently-building row — same behaviour as before, new icon. */}
           <button
-            className="cta cta-icon cta-reset"
-            id="ctaReset"
+            className="ctl ctl-round ctl-glass"
+            id="ctaExit"
             type="button"
-            aria-label="Reset"
-          />
-          <button
-            className="cta cta-icon cta-randomise"
-            id="ctaRandomise"
-            type="button"
-            aria-label="Randomise"
-          />
-          <button
-            className="cta cta-help"
-            id="ctaHelp"
-            type="button"
-            aria-label="How to play"
+            aria-label="Reset row"
           >
-            ?
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <circle cx="4"  cy="10" r="1.6" fill="currentColor" />
+              <circle cx="10" cy="10" r="1.6" fill="currentColor" />
+              <circle cx="16" cy="10" r="1.6" fill="currentColor" />
+            </svg>
           </button>
-          <button className="cta cta-primary" id="ctaPlay" type="button">
-            PLAY NUMBERS
+
+          {/* Count pill with a progress ring tracing the pill's outline.
+              The cyan stroke fills clockwise as balls are added to the
+              row; resets to empty when the row completes and clears.
+              Tap the pill to cycle through the GAME_COUNT_CYCLE options. */}
+          <button
+            className="ctl ctl-pill ctl-glass"
+            id="ctaPill"
+            type="button"
+            aria-label="Auto-fill current row"
+          >
+            <svg
+              className="ctl-pill-progress"
+              viewBox="0 0 120 44"
+              preserveAspectRatio="none"
+              aria-hidden="true"
+            >
+              <rect
+                x="1.5" y="1.5" width="117" height="41"
+                rx="20.5" ry="20.5"
+                pathLength="100"
+                id="ctaPillProgress"
+              />
+            </svg>
+            <span className="ctl-pill-count" id="ctaPillCount">1/20</span>
+            <svg className="ctl-pill-chevrons" viewBox="0 0 20 16" aria-hidden="true">
+              <polyline points="3,3 9,8 3,13"
+                fill="none" stroke="currentColor" strokeWidth="2.2"
+                strokeLinecap="round" strokeLinejoin="round" />
+              <polyline points="11,3 17,8 11,13"
+                fill="none" stroke="currentColor" strokeWidth="2.2"
+                strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+
+          {/* Wide "Fast select" button — pops enough bubbles to complete
+              all remaining games up to totalGames. Replaces the prior
+              ⏭ skip-to-end button; single-row ▶ is gone entirely. */}
+          <button
+            className="ctl ctl-fast-select"
+            id="ctaFastSelect"
+            type="button"
+            aria-label="Fast select all remaining games"
+          >
+            <svg className="ctl-fast-icon" viewBox="0 0 18 18" aria-hidden="true">
+              <polygon points="10,1 3,10 8,10 7,17 15,7 10,7" fill="currentColor" />
+            </svg>
+            <span>Fast select</span>
           </button>
         </div>
       </div>
@@ -1198,69 +1214,10 @@ export default function BubbleWrapFidget() {
         <span className="game-message-text" id="gameMessageText" />
       </div>
 
-      <div className="modal-backdrop" id="modalBackdrop">
-        <div
-          className="modal"
-          id="modalEl"
-          role="dialog"
-          aria-label="All your numbers"
-        >
-          <div className="modal-head">
-            <span>YOUR NUMBERS</span>
-            <button
-              className="modal-close"
-              id="modalClose"
-              type="button"
-              aria-label="Close"
-            >
-              x
-            </button>
-          </div>
-          <div className="modal-filters" id="modalFilters">
-            <div className="modal-filters-group">
-              <button
-                className="filter-pill all active"
-                data-heat="all"
-                type="button"
-              >
-                ALL
-              </button>
-              <button
-                className="filter-pill hot"
-                data-heat="hot"
-                type="button"
-              >
-                HOT
-              </button>
-              <button
-                className="filter-pill cold"
-                data-heat="cold"
-                type="button"
-              >
-                COLD
-              </button>
-            </div>
-            <button
-              className="modal-sort-btn"
-              id="modalSortBtn"
-              type="button"
-              aria-label="Sort by heat"
-            >
-              SORT
-            </button>
-          </div>
-          <div className="modal-rows" id="modalRows" />
-          <div className="modal-action-bar">
-            <button
-              className="cta cta-primary"
-              id="modalPlayBtn"
-              type="button"
-            >
-              PLAY NUMBERS
-            </button>
-          </div>
-        </div>
-      </div>
+      {/* WebGL canvas spans the whole body so a ball can animate from a
+          bubble's screen position (up in the stage area) down to its
+          slot in the tray, all in one continuous Three.js scene. */}
+      <canvas className="ball-overlay" id="ballOverlay" />
     </>
   );
 }
