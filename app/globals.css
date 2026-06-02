@@ -778,7 +778,7 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   padding: 24px 24px 44px;
   text-align: center;
   overflow: hidden;
@@ -890,7 +890,7 @@ body {
   position: relative;
   z-index: 3;
   width: min(100%, 400px);
-  margin-top: -28%;
+  margin-top: -32%;
   height: auto;
   display: block;
   -webkit-user-select: none;
@@ -902,9 +902,10 @@ body {
   position: relative;
   z-index: 2;
   display: flex;
-  flex-direction: column;
+  flex-direction: column-reverse;
   align-items: center;
-  gap: 18px;
+  gap: 26px;
+  margin-bottom: 64px;
 }
 .intro-tagline {
   font-family: 'SharpGrotesk', var(--ctl-font);

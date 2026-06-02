@@ -7,7 +7,7 @@ import * as THREE from 'three';
    badge sits in the top-right corner of the viewport so you can
    confirm at a glance that the iOS PWA cache has picked up the
    latest build. */
-const APP_VERSION = 'v15';
+const APP_VERSION = 'v19';
 
 /* ════════════════════════════════════════════════════════════════════
    3D LOTTO BALL TEXTURE — ported from the shakeit app.
@@ -1358,6 +1358,10 @@ export default function BubbleWrapFidget() {
       // MeshStandardMaterial with emissive matching the fill.
 
       const geometry = new THREE.SphereGeometry(1, 64, 64);
+      // 6-disc antiprism layout so a "35" is visible from any angle
+      // as the ball tumbles. noGradient: true skips the baked sheen
+      // — we want pure flat colour, the numbers being the only
+      // surface variation.
       const tex = makeBallTexture(35, false, {
         fill: '#EF40D5',
         textColor: '#ffffff',
@@ -1365,6 +1369,14 @@ export default function BubbleWrapFidget() {
         angularR: 0.40,
         noGradient: true,
       });
+      // Three.js r155+ defaults the renderer's output to SRGBColorSpace.
+      // CanvasTexture defaults to NoColorSpace, which makes the
+      // renderer treat the canvas's sRGB-encoded pixels as if they
+      // were linear-space values — lightens everything noticeably.
+      // Tagging the texture as SRGB tells Three.js to convert to
+      // linear for math and back to sRGB on output, so the rendered
+      // pixel == the source hex.
+      tex.colorSpace = THREE.SRGBColorSpace;
       const mat = new THREE.MeshBasicMaterial({ map: tex });
       const mesh = new THREE.Mesh(geometry, mat);
       mesh.rotation.set(FINAL_ROT_X, FINAL_ROT_Y, 0);
