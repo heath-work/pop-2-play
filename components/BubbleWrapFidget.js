@@ -836,7 +836,7 @@ export default function BubbleWrapFidget() {
     function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
 
     /* Public ball-scene API used by game flow */
-    function spawnBallInSlot(slotIdx, number, sourceX, sourceY) {
+    function spawnBallInSlot(slotIdx, number, sourceX, sourceY, duration) {
       const mesh = ballScene.meshes[slotIdx];
       if (!mesh) return;
       const tex = getBallTexture(number);
@@ -863,7 +863,7 @@ export default function BubbleWrapFidget() {
         sourceX: Number.isFinite(sourceX) ? sourceX : (slot ? slot.x : 0),
         sourceY: Number.isFinite(sourceY) ? sourceY : fallbackY,
         start: performance.now(),
-        duration: SPIN_DURATION_MS,
+        duration: Number.isFinite(duration) ? duration : SPIN_DURATION_MS,
       });
     }
     function clearAllBalls(animate = true) {
@@ -949,9 +949,12 @@ export default function BubbleWrapFidget() {
       viewedGameIdx = currentGame;
       const slotIdx = currentSelections.length - 1;
       // Spawn the ball at the bubble's screen position so it appears
-      // to fall out of the popped bubble down to its slot.
+      // to fall out of the popped bubble down to its slot. During
+      // fast select (autoPlayQueue > 0) the drop animation is halved
+      // so the whole flow runs at ~2× speed.
       const src = bubbleScreenPos(num);
-      spawnBallInSlot(slotIdx, num, src?.x, src?.y);
+      const dropDur = autoPlayQueue > 0 ? SPIN_DURATION_MS / 2 : SPIN_DURATION_MS;
+      spawnBallInSlot(slotIdx, num, src?.x, src?.y, dropDur);
 
       if (currentSelections.length >= NUMBERS_PER_GAME) {
         gameCompleting = true;
@@ -960,9 +963,11 @@ export default function BubbleWrapFidget() {
         playRowComplete();
         triggerGameCompleteCelebration();
         // Let the last ball settle, then hand off to the CSS ghost
-        // row. Balls hide instantly (no slide-up-fade) so the only
-        // animation across the row-complete moment is the ghost row
-        // appearing in place.
+        // row. All inter-row timings halve when fast select is queued.
+        const fast = autoPlayQueue > 0;
+        const settleWait  = (fast ? SPIN_DURATION_MS / 2 : SPIN_DURATION_MS) + 80;
+        const ghostWait   = fast ? 210 : 420;
+        const nextRowWait = fast ? 180 : 360;
         setTimeout(() => {
           clearAllBalls(false);
           populateGhostRow(completedRow);
@@ -975,11 +980,11 @@ export default function BubbleWrapFidget() {
             if (autoPlayQueue > 0) {
               autoPlayQueue--;
               if (autoPlayQueue > 0 || currentGame < totalGames) {
-                setTimeout(autoFillCurrentRow, 360);
+                setTimeout(autoFillCurrentRow, nextRowWait);
               }
             }
-          }, 420);
-        }, SPIN_DURATION_MS + 80);
+          }, ghostWait);
+        }, settleWait);
         refreshPill();
         return;
       }
@@ -1045,7 +1050,8 @@ export default function BubbleWrapFidget() {
         [available[i], available[j]] = [available[j], available[i]];
       }
       const picks = available.slice(0, needed);
-      picks.forEach((n, k) => setTimeout(() => popBubble(n), k * 110));
+      const popInterval = autoPlayQueue > 0 ? 55 : 110;
+      picks.forEach((n, k) => setTimeout(() => popBubble(n), k * popInterval));
     }
 
     /* ── Toast ─────────────────────────────────────────────────── */
