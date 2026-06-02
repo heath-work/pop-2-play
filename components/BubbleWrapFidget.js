@@ -442,7 +442,7 @@ export default function BubbleWrapFidget() {
     // FRAME_H = 548 — documented in the spec comment above; the layout
     // math derives Y per row from FRAME_TOP + FRAME_PAD_TOP, so no
     // runtime use of FRAME_H is needed (CSS pins the plate's height).
-    const FRAME_TOP = 52;            // pixels below stage top (clears status bar + breathing room)
+    const FRAME_TOP = 16;            // pixels below viewport/stage top — matches #bubbleFrame CSS top
     const FRAME_PAD_TOP = 15;
     const FRAME_PAD_LR_ODD  = 8;
     const FRAME_PAD_LR_EVEN = 37;

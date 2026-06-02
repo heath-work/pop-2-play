@@ -134,7 +134,7 @@ body {
    without being covered by the tray. */
 #bubbleFrame {
   position: absolute;
-  top: 52px;
+  top: 16px;
   left: 50%;
   transform: translateX(-50%);
   width: 362px;
