@@ -1041,6 +1041,31 @@ export default function BubbleWrapFidget() {
       rebuild();
       resizeBallScene();
     }, { signal });
+    // iOS PWA: after "Add to Home Screen", the viewport, safe-area
+    // insets and bottom toolbar height can shift in ways that don't
+    // always fire `resize`. ResizeObserver on the canvas + the rings
+    // strip catches every layout-driven dimension change so the slot
+    // centres re-sync and balls stay aligned with their holders.
+    let ro = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => {
+        // rebuild() depends on stage size, resizeBallScene on canvas +
+        // rings. Cheap to call both.
+        rebuild();
+        resizeBallScene();
+      });
+      if (ballCanvas) ro.observe(ballCanvas);
+      if (ringsEl)    ro.observe(ringsEl);
+      if (stage)      ro.observe(stage);
+    }
+    // orientation + page-visibility changes too — Safari sometimes
+    // skips the resize event during these but the layout has changed.
+    window.addEventListener('orientationchange', () => {
+      rebuild(); resizeBallScene();
+    }, { signal });
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) { rebuild(); resizeBallScene(); }
+    }, { signal });
 
     rebuild();
     initBallScene();
@@ -1087,6 +1112,7 @@ export default function BubbleWrapFidget() {
 
     return () => {
       ac.abort();
+      if (ro) ro.disconnect();
       if (bubblesEl) bubblesEl.innerHTML = '';
       if (_hapticSwitch && _hapticSwitch.label.parentNode) {
         _hapticSwitch.label.parentNode.removeChild(_hapticSwitch.label);
@@ -1112,17 +1138,13 @@ export default function BubbleWrapFidget() {
         <div className="toast" id="toast" />
       </div>
 
-      <div className="tray">
-        {/* Ghost row of fading numbers from the previous game. Each game
-            completion replaces its contents. Positioned absolutely so
-            it overlaps the area between the bubble frame's bottom and
-            the current slot row. Behind it sits the gradient overlay
-            that fades it into the frame's shadow. */}
+      {/* Tray middle — ghosts + labels + active slot row. Sits on the
+          body's app_BG starfield, NOT inside the footer plate. This
+          area is transparent so the bg shows through. */}
+      <div className="tray-mid">
         <div className="tray-ghost-row" id="trayGhostRow" aria-hidden="true" />
         <div className="tray-ghost-gradient" aria-hidden="true" />
 
-        {/* Label strip — YOUR NUMBERS | Game N/M | PB — sits over the
-            ghost gradient, just above the active slot row. */}
         <div className="tray-labels">
           <span className="tray-label tray-label-left">YOUR NUMBERS</span>
           <span className="tray-label tray-label-mid" id="trayGameLabel">
@@ -1139,10 +1161,14 @@ export default function BubbleWrapFidget() {
           </div>
         </div>
 
-        {/* Stub kept in DOM so legacy CSS selectors / future swipe rewiring
-            don't error if they look for #visibleRow. */}
+        {/* Legacy stub — kept so older CSS selectors / swipe code
+            referencing #visibleRow don't error. */}
         <div id="visibleRow" aria-hidden="true" />
+      </div>
 
+      {/* Tray foot — controls only. footer_bg.png paints its arc here
+          so the dark plate visually starts BELOW the slot row. */}
+      <div className="tray-foot">
         <div className="tray-ctas">
           {/* Three-dot menu (formerly the X reset). Tapping resets the
               currently-building row — same behaviour as before, new icon. */}

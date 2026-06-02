@@ -81,9 +81,14 @@ body {
 .stage {
   flex: 1;
   position: relative;
-  overflow: hidden;
+  /* overflow: visible so the 548-tall bubble frame can extend past
+     the stage's bottom on short viewports (iOS PWA with bottom safe
+     area inset) and still be fully visible over the tray-mid below.
+     The stage's z-index (5) is higher than tray-mid's (3) so the
+     overhanging frame paints in front. */
+  overflow: visible;
   min-height: 400px;
-  z-index: 1;
+  z-index: 5;
   /* isolation: isolate keeps the bubble imgs' mix-blend-mode reading
      the stage's own painted backdrop (the body's app_BG.png shows
      through this transparent stage). */
@@ -122,7 +127,11 @@ body {
    sitting 52 px below the stage top so the status bar's safe area
    stays clear above it. computeLayout() in the JS uses the same
    FRAME_TOP / FRAME_W constants so the bubble holes the PNG draws
-   line up exactly with the JS-positioned bubble buttons. */
+   line up exactly with the JS-positioned bubble buttons.
+   No z-index here — the frame paints first (document order), bubbles
+   paint over it; the whole stage gets its z-index bumped (below) so
+   the frame can extend past the stage bottom on shorter viewports
+   without being covered by the tray. */
 #bubbleFrame {
   position: absolute;
   top: 52px;
@@ -216,21 +225,31 @@ body {
 .randomise { display: none; }
 
 /* ── Tray ─────────────────────────────────────────────────────── */
-.tray {
-  /* footer_bg.png is a tall dark navy plate with a soft arc at the top
-     (the "shadow" cast by the bubble holder above). Stretched to 100%
-     across so its arc tracks the tray width regardless of viewport. */
-  background:
-    url('/footer_bg.png') top center / 100% 100% no-repeat,
-    #000a30;
-  /* 56px top padding reserves room for the ghost row + its fading
-     gradient overlay (both absolutely positioned), so the in-flow
-     labels and slot row sit below them. */
-  padding: 56px 16px calc(14px + env(safe-area-inset-bottom, 0px));
+/* The old `.tray` was a single block holding ghosts + labels + slots +
+   controls on top of footer_bg.png. The redesign splits that into
+   two sibling blocks: `.tray-mid` (transparent — ghosts, labels and
+   the active slot row sit over the body's app_BG starfield) and
+   `.tray-foot` (carries the footer_bg arc and contains ONLY the
+   bottom control row). That keeps the controls visually plate-like
+   and lets the slot row breathe over the cosmic background. */
+.tray-mid {
+  background: transparent;
+  padding: 56px 16px 12px;
   flex-shrink: 0;
   position: relative;
   z-index: 3;
-  border-top: none;
+}
+.tray-foot {
+  /* footer_bg.png is a 590×146 dark navy plate with a soft arc at the
+     top — the "shadow" cast by the bubble holder above. Sized to fit
+     this section so the arc lands at the section's top edge. */
+  background:
+    url('/footer_bg.png') top center / 100% 100% no-repeat,
+    #000a30;
+  padding: 14px 16px calc(14px + env(safe-area-inset-bottom, 0px));
+  flex-shrink: 0;
+  position: relative;
+  z-index: 3;
 }
 
 /* The old tray-head / progress / page-num is no longer the primary
