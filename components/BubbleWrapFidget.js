@@ -7,7 +7,7 @@ import * as THREE from 'three';
    badge sits in the top-right corner of the viewport so you can
    confirm at a glance that the iOS PWA cache has picked up the
    latest build. */
-const APP_VERSION = 'v21';
+const APP_VERSION = 'v23';
 
 /* ════════════════════════════════════════════════════════════════════
    3D LOTTO BALL TEXTURE — ported from the shakeit app.
@@ -273,72 +273,90 @@ export default function BubbleWrapFidget() {
 
     if (!stage || !bubblesEl) return;
 
-    /* ── Audio (synthesised — Web Audio only, no asset files) ────
-       The pop sound is a short downward-swept sine + percussive
-       envelope, generated fresh per pop via the AudioContext —
-       same pattern as playRowComplete / playSwoosh below. No file
-       fetch, no <audio> pool, no buffer decode — just oscillators
-       inside the running AC, which has been bulletproof on iOS. */
+    /* ── Audio (bubble-pop.mp3 via Web Audio + <audio> pool) ────
+       Pop sound is the recorded /bubble-pop.mp3 asset:
+         1. Web Audio path — fetched + decoded into a buffer once,
+            replayed by spinning up a fresh AudioBufferSourceNode per
+            pop. Detune + gain randomised so adjacent pops vary.
+         2. <audio> pool fallback — 8 pre-created Audio elements,
+            unlocked on first user gesture via muted play(). Used
+            when the Web Audio buffer isn't ready or the AC fails. */
+    const POP_SRC = '/bubble-pop.mp3';
+    const POP_POOL_SIZE = 8;
     let audioEnabled = true;
     let audioCtx = null;
-    let keepaliveStarted = false;
+    let popBuffer = null;
+    let popBufferLoading = false;
+    const popPool = [];
+    let popPoolIdx = 0;
+    let popPoolUnlocked = false;
+    for (let i = 0; i < POP_POOL_SIZE; i++) {
+      const a = new Audio(POP_SRC);
+      a.preload = 'auto';
+      popPool.push(a);
+    }
     function ensureAudio() {
       if (!audioCtx) {
         const AC = window.AudioContext || window.webkitAudioContext;
         if (AC) {
-          try { audioCtx = new AC(); } catch (_) {}
+          try { audioCtx = new AC(); loadPopBuffer(); } catch (_) {}
         }
       }
       if (audioCtx && audioCtx.state === 'suspended') {
         audioCtx.resume().catch(() => {});
       }
-      // iOS Safari aggressively suspends an AudioContext after a few
-      // hundred ms of inactivity, even while "running" — once that
-      // happens, createOscillator() silently produces no sound. A
-      // permanent 1 Hz / gain-0 oscillator keeps the AC "in use" so
-      // iOS leaves it active. Started once, runs for the AC's life.
-      if (audioCtx && !keepaliveStarted) {
-        keepaliveStarted = true;
-        try {
-          const osc = audioCtx.createOscillator();
-          osc.frequency.value = 1;          // sub-audible
-          const g = audioCtx.createGain();
-          g.gain.value = 0;                 // silent
-          osc.connect(g).connect(audioCtx.destination);
-          osc.start();
-          // never stop — runs for the lifetime of the AC
-        } catch (_) {}
+      if (!popPoolUnlocked) {
+        popPoolUnlocked = true;
+        for (const a of popPool) {
+          a.muted = true;
+          const p = a.play();
+          if (p && typeof p.then === 'function') {
+            p.then(() => { a.muted = false; }).catch(() => { a.muted = false; });
+          } else {
+            a.muted = false;
+          }
+        }
+      }
+    }
+    async function loadPopBuffer() {
+      if (popBufferLoading || popBuffer || !audioCtx) return;
+      if (location.protocol === 'file:') return;
+      popBufferLoading = true;
+      try {
+        const res = await fetch(POP_SRC);
+        const data = await res.arrayBuffer();
+        popBuffer = await new Promise((resolve, reject) =>
+          audioCtx.decodeAudioData(data, resolve, reject));
+      } catch (err) {
+        console.warn('[pop] Web Audio decode failed; using <audio> pool:', err);
+      } finally {
+        popBufferLoading = false;
       }
     }
     function playPop(variation = 0) {
-      if (!audioEnabled || !audioCtx) return;
-      // Belt-and-braces: even with the keepalive, resume if iOS has
-      // somehow managed to suspend us between pops. Safe to call
-      // repeatedly.
-      if (audioCtx.state === 'suspended') {
-        audioCtx.resume().catch(() => {});
+      if (!audioEnabled) return;
+      if (audioCtx && popBuffer) {
+        try {
+          const src = audioCtx.createBufferSource();
+          src.buffer = popBuffer;
+          src.detune.value = variation * 30 + (Math.random() * 60 - 30);
+          const gain = audioCtx.createGain();
+          gain.gain.value = 0.85 + Math.random() * 0.15;
+          src.connect(gain).connect(audioCtx.destination);
+          src.start();
+          return;
+        } catch (_) {}
       }
+      const a = popPool[popPoolIdx];
+      popPoolIdx = (popPoolIdx + 1) % POP_POOL_SIZE;
       try {
-        const now = audioCtx.currentTime;
-        // Pitch range per-pop: base ~520-720 Hz, plus a small offset
-        // from the "variation" parameter passed by the caller so
-        // adjacent bubbles vary musically.
-        const baseFreq = 540 + variation * 35 + Math.random() * 180;
-        // Sine oscillator with a fast downward pitch sweep — the
-        // hallmark "blip" of a bubble pop.
-        const osc = audioCtx.createOscillator();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(baseFreq * 1.6, now);
-        osc.frequency.exponentialRampToValueAtTime(baseFreq * 0.45, now + 0.075);
-        // Percussive envelope: 5 ms attack, ~110 ms decay.
-        const gain = audioCtx.createGain();
-        gain.gain.setValueAtTime(0.0001, now);
-        gain.gain.exponentialRampToValueAtTime(
-          0.32 + Math.random() * 0.10, now + 0.005);
-        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.13);
-        osc.connect(gain).connect(audioCtx.destination);
-        osc.start(now);
-        osc.stop(now + 0.16);
+        a.pause();
+        a.muted = false;
+        a.currentTime = 0;
+        a.playbackRate = 0.92 + (variation * 0.04) + Math.random() * 0.14;
+        a.volume = 0.85 + Math.random() * 0.15;
+        const p = a.play();
+        if (p && typeof p.catch === 'function') p.catch(() => {});
       } catch (_) {}
     }
     const ROW_COMPLETE_NOTE_FREQS    = [523.25, 659.25, 783.99];
@@ -608,7 +626,15 @@ export default function BubbleWrapFidget() {
         maybeRefillSheet();
       }, { once: true });
 
-      addSelected(num);
+      // Visual pop has fired regardless. Defer the SELECTION (slot
+       // assignment + ball drop) while a row is still settling so
+       // balls populate the next row in the order the user popped
+       // them, not on top of the still-landing previous row.
+      if (gameCompleting) {
+        pendingPops.push(num);
+      } else {
+        addSelected(num);
+      }
       return true;
     }
 
@@ -666,6 +692,12 @@ export default function BubbleWrapFidget() {
     let viewedGameIdx = 0;
     let totalGames = DEFAULT_GAMES;
     let gameCompleting = false;
+    // When a row's settle wait is in progress and the user pops more
+    // bubbles, the visual pop (animation / audio / burst) fires
+    // immediately, but the SELECTION (slot assignment + ball drop)
+    // is queued here. Processed in order after advanceRow runs, so
+    // balls populate the next row sequentially.
+    let pendingPops = [];
 
     function refreshPill() {
       if (ctaPillCountEl) {
@@ -1012,12 +1044,10 @@ export default function BubbleWrapFidget() {
       });
     }
 
-    // Idempotent — does the row-complete work (clear active balls,
-    // populate ghosts, bump game counter, reset selections). May be
-    // called twice for the same row: once eagerly when the user pops
-    // again during the settle wait, and once from the deferred
-    // setTimeout when the last drop animation finishes. The
-    // `gameCompleting` guard makes the second call a no-op.
+    // Clears the active balls, paints the ghost row, bumps the game
+    // counter, then drains any pops the user queued during the
+    // settle wait. Pops are spaced 110 ms apart so the next row
+    // visibly populates ball-by-ball instead of all-at-once.
     function advanceRow(completedRow) {
       if (!gameCompleting) return;
       gameCompleting = false;
@@ -1027,19 +1057,15 @@ export default function BubbleWrapFidget() {
       currentSelections = [];
       viewedGameIdx = currentGame;
       refreshPill();
+
+      if (pendingPops.length) {
+        const queue = pendingPops;
+        pendingPops = [];
+        queue.forEach((n, i) => setTimeout(() => addSelected(n), i * 110));
+      }
     }
 
     function addSelected(num) {
-      // If the previous row just completed and is still in its
-      // settle-wait window, advance NOW so this new pop lands in
-      // the next row instead of being blocked. The deferred timeout
-      // from the previous addSelected call will fire later and
-      // no-op via advanceRow's guard.
-      if (gameCompleting) {
-        const prev = allGames[currentGame];
-        if (prev) advanceRow(prev);
-      }
-
       currentSelections.push(num);
       viewedGameIdx = currentGame;
       const slotIdx = currentSelections.length - 1;
@@ -1086,6 +1112,7 @@ export default function BubbleWrapFidget() {
     function resetAll() {
       autoPlayQueue = 0;
       gameCompleting = false;
+      pendingPops = [];
       currentGame = 0;
       currentSelections = [];
       viewedGameIdx = 0;
