@@ -207,7 +207,6 @@ function makeBallTexture(number) {
    GAME CONFIG
    ════════════════════════════════════════════════════════════════════ */
 const NUMBERS_PER_GAME = 8;
-const COLS = 6;
 const DEFAULT_GAMES = 20;
 
 /* Spin-in: ball enters from below the ring slot, spins on Y, then
@@ -440,7 +439,9 @@ export default function BubbleWrapFidget() {
        Even row: 37 + 5·52 + 4·7 + 37 = 362 ✓
        Total numbers per sheet = 5·6 + 5·5 = 55. */
     const FRAME_W = 362;
-    const FRAME_H = 548;
+    // FRAME_H = 548 — documented in the spec comment above; the layout
+    // math derives Y per row from FRAME_TOP + FRAME_PAD_TOP, so no
+    // runtime use of FRAME_H is needed (CSS pins the plate's height).
     const FRAME_TOP = 52;            // pixels below stage top (clears status bar + breathing room)
     const FRAME_PAD_TOP = 15;
     const FRAME_PAD_LR_ODD  = 8;
@@ -883,22 +884,47 @@ export default function BubbleWrapFidget() {
       }
     }
 
-    // Populate the CSS ghost row with the completed game's numbers.
-    // Each ghost is a circular span with the ball's hue as its fill,
-    // visible just above the active slot row with a CSS blur + opacity.
+    // Append a new ghost row for the completed game and animate it up
+    // into the rest position (blur 4, opacity 0.6). Any rows already
+    // resting get marked .ghost-leaving so they animate further up
+    // and fade out — the visual is a "rolling" stack where every
+    // game's numbers float up and disappear behind the one before.
     function populateGhostRow(nums) {
       if (!ghostRowEl) return;
-      ghostRowEl.innerHTML = '';
+      // Mark previous resting/entering rows as leaving (the new arrival
+      // pushes them up + out). leaving rows are removed from the DOM
+      // once their transition finishes.
+      for (const row of ghostRowEl.querySelectorAll('.ghost-row:not(.ghost-leaving)')) {
+        row.classList.add('ghost-leaving');
+        row.classList.remove('ghost-rested');
+        // Fallback removal in case transitionend doesn't fire.
+        setTimeout(() => row.remove(), 900);
+      }
+
+      const row = document.createElement('div');
+      row.className = 'ghost-row';
       for (const n of nums) {
         const h = ballHue(n);
-        const div = document.createElement('div');
-        div.className = 'ghost';
-        div.textContent = String(n);
-        div.style.background =
+        const cell = document.createElement('div');
+        cell.className = 'ghost';
+        cell.textContent = String(n);
+        cell.style.background =
           `radial-gradient(circle at 35% 35%, hsl(${h}, 80%, 55%), hsl(${h}, 85%, 32%))`;
-        div.style.color = numTextColor(h);
-        ghostRowEl.appendChild(div);
+        cell.style.color = numTextColor(h);
+        row.appendChild(cell);
       }
+      ghostRowEl.appendChild(row);
+      // Force a reflow so the browser picks up the initial state
+      // before the `.ghost-rested` class is added — otherwise the
+      // transition would start mid-flight from the rested state and
+      // we'd see no animation.
+      void row.offsetWidth;
+      row.classList.add('ghost-rested');
+      row.addEventListener('transitionend', function onEnd(e) {
+        if (e.propertyName !== 'transform') return;
+        if (row.classList.contains('ghost-leaving')) row.remove();
+        row.removeEventListener('transitionend', onEnd);
+      });
     }
 
     /* ── Game flow ─────────────────────────────────────────────── */
@@ -933,11 +959,12 @@ export default function BubbleWrapFidget() {
         allGames[currentGame] = completedRow;
         playRowComplete();
         triggerGameCompleteCelebration();
-        // Let the last ball settle, then slide the row up + fade out
-        // while the CSS ghost row picks up the static visualisation
-        // just above the active slot row.
+        // Let the last ball settle, then hand off to the CSS ghost
+        // row. Balls hide instantly (no slide-up-fade) so the only
+        // animation across the row-complete moment is the ghost row
+        // appearing in place.
         setTimeout(() => {
-          clearAllBalls(true);
+          clearAllBalls(false);
           populateGhostRow(completedRow);
           setTimeout(() => {
             currentGame++;

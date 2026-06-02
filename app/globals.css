@@ -307,25 +307,67 @@ body {
   z-index: 40;
 }
 
-/* Ghost row — last completed game's numbers, sitting just above the
-   active slot row at a reduced opacity, with a dark gradient above
-   them that simulates them disappearing back into the bubble frame's
-   shadow. The .tray-ghost-row is the slot-aligned strip that holds
-   8 absolutely-positioned <span>s (one per ball), painted in CSS
-   (not WebGL) so the ghosts persist cheaply between games. */
+/* Ghost row container — sits just above the active slot row. It's a
+   container for STACKED ghost rows; each completed game spawns a new
+   .ghost-row element inside, which animates from the slot position
+   up into the rest position with a transition on transform/opacity/
+   filter. When the next game completes, the resting row gets the
+   .ghost-leaving class and animates further up and out. */
 .tray-ghost-row {
   position: absolute;
   top: 8px;
   left: 16px;
   right: 16px;
+  /* Height matches the slot row's intrinsic ring height so the inline
+     transform math below ("translate up by one row's worth") lands
+     each ghost at the right resting Y. */
   height: 32px;
-  display: grid;
-  grid-template-columns: repeat(8, 1fr);
-  gap: 5px;
   pointer-events: none;
   z-index: 1;
 }
+/* Each ghost row is positioned over the container, holding 8 cells
+   in a CSS grid. Starts at the slot row's Y (translateY of
+   `var(--ghost-enter-from)`), then transitions to translateY(0) +
+   blur + reduced opacity for the resting state. */
+.tray-ghost-row .ghost-row {
+  --ghost-enter-from: 56px;  /* gap from ghost container down to slot row centre */
+  --ghost-leave-to:   -42px; /* further up + out */
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 6px;
+  justify-items: center;
+  align-items: center;
+  /* Initial state: hovering at the slot row, fully opaque, no blur. */
+  transform: translateY(var(--ghost-enter-from));
+  opacity: 1;
+  filter: blur(0px);
+  transition:
+    transform 480ms cubic-bezier(.22, 1, .36, 1),
+    opacity  480ms ease-out,
+    filter   480ms ease-out;
+  will-change: transform, opacity, filter;
+}
+/* Resting — entry animation target. */
+.tray-ghost-row .ghost-row.ghost-rested {
+  transform: translateY(0);
+  opacity: 0.6;
+  filter: blur(4px);
+}
+/* Leaving — pushed further up + out by the next incoming row. */
+.tray-ghost-row .ghost-row.ghost-leaving {
+  transform: translateY(var(--ghost-leave-to));
+  opacity: 0;
+  filter: blur(6px);
+}
 .tray-ghost-row .ghost {
+  /* Square cells, circular via border-radius. aspect-ratio:1 with
+     width:100% lets the cell take the full grid column width as its
+     circle diameter — un-squished, no oval shape. */
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  max-width: 38px;            /* cap so the disc doesn't bloat past the slot ring size */
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -333,9 +375,7 @@ body {
   font-family: var(--ctl-font);
   font-weight: 500;
   font-size: 13px;
-  color: rgba(255, 255, 255, 0.9);
-  opacity: 0.55;
-  filter: blur(0.4px);
+  color: rgba(255, 255, 255, 0.95);
 }
 /* Linear gradient over the top half of the ghost row → fully opaque
    at the very top (covers the ghosts where they meet the bubble
