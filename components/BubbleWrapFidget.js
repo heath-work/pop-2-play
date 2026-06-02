@@ -3,6 +3,12 @@
 import { useEffect } from 'react';
 import * as THREE from 'three';
 
+/* Bump this on every change you want to verify is deployed. The
+   badge sits in the top-right corner of the viewport so you can
+   confirm at a glance that the iOS PWA cache has picked up the
+   latest build. */
+const APP_VERSION = 'v01';
+
 /* ════════════════════════════════════════════════════════════════════
    3D LOTTO BALL TEXTURE — ported from the shakeit app.
    Each ball is a coloured sphere with six numbered "discs" arranged on
@@ -1372,6 +1378,10 @@ export default function BubbleWrapFidget() {
 
   return (
     <>
+      {/* Build badge — top-right corner. Bump APP_VERSION at the top
+          of this file on every change you want to verify is live. */}
+      <div className="build-version" aria-hidden="true">{APP_VERSION}</div>
+
       {/* Intro overlay — dismissed by the "Get popping" CTA. The
           bubble grid renders behind it (blurred via the panel's
           backdrop-filter). Audio + Tilt toggles preset their game

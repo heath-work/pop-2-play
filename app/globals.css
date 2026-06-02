@@ -104,6 +104,26 @@ body {
   display: none;
 }
 
+/* Build badge — top-right corner, always above every other layer
+   (intro z:300, settings z:200, canvas z:40). For verifying that an
+   iOS PWA install has picked up the latest bundle. */
+.build-version {
+  position: fixed;
+  top: calc(8px + env(safe-area-inset-top, 0px));
+  right: 10px;
+  z-index: 9999;
+  font-family: 'SharpGrotesk', var(--ctl-font);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.55);
+  background: rgba(0, 0, 0, 0.35);
+  padding: 3px 7px;
+  border-radius: 999px;
+  pointer-events: none;
+  user-select: none;
+}
+
 /* ── Bubble grid ──────────────────────────────────────────────── */
 /* Layering (document order, no z-index inside .stage — anything that
    creates a new stacking context here would trap the bubble imgs'
