@@ -252,6 +252,7 @@ export default function BubbleWrapFidget() {
        inside the running AC, which has been bulletproof on iOS. */
     let audioEnabled = true;
     let audioCtx = null;
+    let keepaliveStarted = false;
     function ensureAudio() {
       if (!audioCtx) {
         const AC = window.AudioContext || window.webkitAudioContext;
@@ -262,9 +263,32 @@ export default function BubbleWrapFidget() {
       if (audioCtx && audioCtx.state === 'suspended') {
         audioCtx.resume().catch(() => {});
       }
+      // iOS Safari aggressively suspends an AudioContext after a few
+      // hundred ms of inactivity, even while "running" — once that
+      // happens, createOscillator() silently produces no sound. A
+      // permanent 1 Hz / gain-0 oscillator keeps the AC "in use" so
+      // iOS leaves it active. Started once, runs for the AC's life.
+      if (audioCtx && !keepaliveStarted) {
+        keepaliveStarted = true;
+        try {
+          const osc = audioCtx.createOscillator();
+          osc.frequency.value = 1;          // sub-audible
+          const g = audioCtx.createGain();
+          g.gain.value = 0;                 // silent
+          osc.connect(g).connect(audioCtx.destination);
+          osc.start();
+          // never stop — runs for the lifetime of the AC
+        } catch (_) {}
+      }
     }
     function playPop(variation = 0) {
       if (!audioEnabled || !audioCtx) return;
+      // Belt-and-braces: even with the keepalive, resume if iOS has
+      // somehow managed to suspend us between pops. Safe to call
+      // repeatedly.
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume().catch(() => {});
+      }
       try {
         const now = audioCtx.currentTime;
         // Pitch range per-pop: base ~520-720 Hz, plus a small offset
