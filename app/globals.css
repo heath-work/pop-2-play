@@ -654,67 +654,69 @@ body {
   display: flex;
   opacity: 1;
 }
+/* No surrounding panel — buttons float directly on the blurred
+   backdrop as individual glass capsules. The container is just a
+   flex column for gap/alignment. */
 .settings-modal {
   width: 100%;
   max-width: 320px;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  background: rgba(18, 18, 60, 0.55);
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  backdrop-filter: blur(24px) saturate(160%);
-  -webkit-backdrop-filter: blur(24px) saturate(160%);
-  border-radius: 22px;
-  padding: 18px;
-  box-shadow:
-    0 24px 60px rgba(0, 0, 0, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.12);
-  /* Subtle pop-in for the panel — sits 10px lower at start. */
+  background: transparent;
+  border: 0;
+  padding: 0;
+  /* Subtle pop-in keeps the feel of an opening menu. */
   transform: translateY(10px);
   transition: transform 240ms cubic-bezier(.2, 1, .35, 1);
 }
 .settings-backdrop.visible .settings-modal {
   transform: translateY(0);
 }
+/* Matches the bottom-bar "Fast select" pill — translucent lavender
+   fill, 1 px lavender border, 8 px backdrop blur, faint top inset
+   highlight. Same family, same weight (500 — Sharp Grotesk Medium). */
 .settings-btn {
-  /* Fully rounded (pill) buttons with a 2px white border. Vertical
-     padding 6 px lets the row height collapse around its glyph instead
-     of being pinned to a fixed height. */
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 2px solid #ffffff;
+  background: rgba(180, 160, 240, 0.22);
+  border: 1px solid rgba(200, 180, 255, 0.25);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
   color: #fff;
   font-family: 'SharpGrotesk', var(--ctl-font);
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 500;
   letter-spacing: 0.01em;
   cursor: pointer;
-  padding: 6px 18px;
+  padding: 10px 22px 8px;
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 10px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10);
   transition: background 180ms ease, transform 120ms ease;
 }
-.settings-btn:hover { background: rgba(255, 255, 255, 0.10); }
+.settings-btn:hover  { background: rgba(180, 160, 240, 0.30); }
 .settings-btn:active { transform: translateY(1px); }
 .settings-toggle { justify-content: space-between; }
 .settings-toggle .settings-toggle-state {
   font-weight: 600;
   letter-spacing: 0.08em;
-  color: rgba(140, 220, 255, 0.95);
+  color: rgba(160, 230, 255, 0.95);
   text-transform: uppercase;
   font-size: 12px;
 }
 .settings-toggle.is-off .settings-toggle-state {
   color: rgba(255, 255, 255, 0.45);
 }
+/* Exit keeps the destructive red tint but the same glass treatment. */
 .settings-btn-exit {
-  background: rgba(255, 80, 110, 0.16);
-  /* Exit keeps the red treatment — not the white 2 px border. */
-  border: 2px solid rgba(255, 80, 110, 0.45);
-  color: #ff9aaa;
+  background: rgba(255, 90, 120, 0.22);
+  border: 1px solid rgba(255, 140, 160, 0.32);
+  color: #ffd6dd;
+  box-shadow: inset 0 1px 0 rgba(255, 210, 220, 0.18);
 }
-.settings-btn-exit:hover { background: rgba(255, 80, 110, 0.22); }
+.settings-btn-exit:hover { background: rgba(255, 90, 120, 0.30); }
 
 /* Legacy modal kept hidden so any leftover JS that touches its
    selectors doesn't blow up. */

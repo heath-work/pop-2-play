@@ -6,5 +6,5 @@ await page.goto('http://localhost:3001/', { waitUntil: 'networkidle0' });
 await new Promise(r => setTimeout(r, 800));
 await page.click('#ctaExit');
 await new Promise(r => setTimeout(r, 400));
-await page.screenshot({ path: '/tmp/p2p-shots/v37-modal.png' });
+await page.screenshot({ path: '/tmp/p2p-shots/v38-modal.png' });
 await browser.close();

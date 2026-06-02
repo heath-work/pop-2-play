@@ -1041,27 +1041,22 @@ export default function BubbleWrapFidget() {
     }
 
     /* ── Bottom controls ───────────────────────────────────────── */
-    // Shared: un-pop the bubbles selected this row, clear the slot
-    // balls, and stop any in-flight fast-select cascade. Called from
-    // the Settings modal's Reset button.
-    function resetCurrentRow() {
+    // Full reset: refresh the sheet (animated slide-out/in), clear all
+    // game progress, ghost rows and active balls. Called from the
+    // Settings modal's Reset button.
+    function resetAll() {
       autoPlayQueue = 0;
-      if (currentSelections.length === 0) {
-        showToast('Nothing to reset.');
-        return;
-      }
-      for (const num of currentSelections) {
-        const state = bubbleStates.get(num);
-        if (state) { state.popped = false; state.popping = false; }
-        const el = bubbleEls.get(num);
-        if (el) {
-          el.classList.remove('popped', 'popping');
-          const img = el.querySelector('img');
-          if (img) img.src = BUBBLE_INTACT_SRC;
-        }
-      }
+      gameCompleting = false;
+      currentGame = 0;
       currentSelections = [];
+      viewedGameIdx = 0;
+      allGames.length = 0;
+      // Hide WebGL balls instantly.
       clearAllBalls(false);
+      // Drop persistent ghost rows.
+      if (ghostRowEl) ghostRowEl.innerHTML = '';
+      // Refill the sheet with the existing animation hook.
+      refillSheet();
       refreshPill();
     }
 
@@ -1100,7 +1095,7 @@ export default function BubbleWrapFidget() {
       if (e.target === settingsBackdropEl) closeSettings();
     }, { signal });
     if (settingsResetEl) settingsResetEl.addEventListener('click', () => {
-      resetCurrentRow();
+      resetAll();
       closeSettings();
     }, { signal });
     if (settingsAudioEl) settingsAudioEl.addEventListener('click', () => {
@@ -1484,7 +1479,7 @@ export default function BubbleWrapFidget() {
             How to Play
           </button>
           <button className="settings-btn" id="settingsReset" type="button">
-            Reset
+            Start over
           </button>
           <button className="settings-btn settings-toggle" id="settingsAudio" type="button">
             <span>Audio</span>
