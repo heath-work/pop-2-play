@@ -71,40 +71,23 @@ const DISC_POSITIONS = [
 ];
 const DISC_ANGULAR_R = 0.69;
 
-function buildStamp(number) {
-  /* SIZE 128 (was 96): the stamp's inscribed circle is the cap's
-     boundary on the sphere — anything painted in the stamp corners
-     never reaches the rendered disc. Bumping SIZE while keeping
-     FONT_SIZE at 0.85·SIZE preserves the rendered glyph proportions
-     while giving the two-digit numbers more headroom inside the
-     circle. */
+function buildStamp(number, textColorOverride) {
   const SIZE = 128;
   const stamp = document.createElement('canvas');
   stamp.width = SIZE; stamp.height = SIZE;
   const sctx = stamp.getContext('2d');
   const str = String(number);
   const FONT_SIZE = SIZE * 0.75;
-  /* Sharp Grotesk Medium (weight 500) — registered in globals.css.
-     Falls back to Larsseit / system-ui while the otf streams; the
-     rebake-on-fontsready effect below re-renders any textures baked
-     with the fallback once SharpGrotesk is available. */
   sctx.font = `500 ${FONT_SIZE}px "SharpGrotesk", "Larsseit", system-ui, sans-serif`;
   sctx.textAlign = 'center';
-  /* Centre the glyph using its actual ink-box metrics instead of
-     canvas's 'middle' baseline. 'middle' positions y at the centre of
-     the EM box, which for SharpGrotesk Medium sits visibly below the
-     centre of the visible digit (the font has a tall descender area
-     even though digits don't use it). That offset is what was clipping
-     the bottom of digits against the disc's inscribed circle. Using
-     `alphabetic` + measureText gives a true optical centre. */
   sctx.textBaseline = 'alphabetic';
-  sctx.fillStyle = numTextColor(ballHue(number));
+  // textColorOverride lets white powerballs use dark glyphs even though
+  // the underlying number's hue would normally pick white text.
+  sctx.fillStyle = textColorOverride || numTextColor(ballHue(number));
   const m = sctx.measureText(str);
   const inkH = m.actualBoundingBoxAscent + m.actualBoundingBoxDescent;
   const yBaseline = (SIZE - inkH) / 2 + m.actualBoundingBoxAscent;
   sctx.fillText(str, SIZE / 2, yBaseline);
-  /* Underline 6/9 so orientation reads correctly mid-spin. Sits just
-     under the alphabetic baseline. */
   if (str === '6' || str === '9') {
     const w = m.width;
     sctx.fillRect(
@@ -166,14 +149,15 @@ function warpDisc(texData, W, H, lat0, lon0, stamp) {
   }
 }
 
-function makeBallTexture(number) {
+function makeBallTexture(number, white = false) {
   const W = 512, H = 256;
   const cvs = document.createElement('canvas');
   cvs.width = W; cvs.height = H;
   const ctx = cvs.getContext('2d');
 
-  // Solid base colour.
-  ctx.fillStyle = ballFillCss(ballHue(number));
+  // Solid base colour — `white=true` overrides the hue lookup so the
+  // 8th (powerball) ball renders white with dark navy glyphs.
+  ctx.fillStyle = white ? '#f4f4f6' : ballFillCss(ballHue(number));
   ctx.fillRect(0, 0, W, H);
 
   // Vertical highlight/shadow gradient baked into the texture.
@@ -191,7 +175,7 @@ function makeBallTexture(number) {
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, W, H);
 
-  const stamp = buildStamp(number);
+  const stamp = buildStamp(number, white ? '#0b1140' : null);
   const img = ctx.getImageData(0, 0, W, H);
   for (const [lat, lon] of DISC_POSITIONS) {
     warpDisc(img.data, W, H, lat, lon, stamp);
@@ -666,11 +650,14 @@ export default function BubbleWrapFidget() {
       height: 0,
       raf:    null,
     };
-    function getBallTexture(num) {
-      let t = ballScene.texCache.get(num);
+    function getBallTexture(num, white = false) {
+      // Cache keyed on (number, whiteness) since the same number can be
+      // a coloured regular ball OR a white powerball (the 8th of a row).
+      const key = white ? `w${num}` : `c${num}`;
+      let t = ballScene.texCache.get(key);
       if (t) return t;
-      t = makeBallTexture(num);
-      ballScene.texCache.set(num, t);
+      t = makeBallTexture(num, white);
+      ballScene.texCache.set(key, t);
       return t;
     }
     function initBallScene() {
@@ -847,14 +834,19 @@ export default function BubbleWrapFidget() {
     function spawnBallInSlot(slotIdx, number, sourceX, sourceY, duration) {
       const mesh = ballScene.meshes[slotIdx];
       if (!mesh) return;
-      const tex = getBallTexture(number);
+      // The last ball in each row is the white "powerball" — same
+      // number on its face, but the ball itself is white with dark
+      // navy glyphs (classic lottery convention for the bonus pick).
+      const white = slotIdx === NUMBERS_PER_GAME - 1;
+      const tex = getBallTexture(number, white);
       if (mesh.material.map !== tex) {
         mesh.material.map = tex;
         mesh.material.needsUpdate = true;
       }
-      // Track number on the mesh so the font-load rebake (below) can
-      // refresh visible balls once SharpGrotesk loads.
+      // Track number + whiteness on the mesh so the font-load rebake
+      // can refresh visible balls once SharpGrotesk loads.
       mesh.userData.number = number;
+      mesh.userData.white = white;
       mesh.material.opacity = 1;
       mesh.material.transparent = false;
       mesh.visible = true;
@@ -922,16 +914,18 @@ export default function BubbleWrapFidget() {
 
       const row = document.createElement('div');
       row.className = 'ghost-row';
-      for (const n of nums) {
+      nums.forEach((n, i) => {
         const h = ballHue(n);
+        const isPowerball = i === NUMBERS_PER_GAME - 1;
         const cell = document.createElement('div');
         cell.className = 'ghost';
         cell.textContent = String(n);
-        cell.style.background =
-          `radial-gradient(circle at 35% 35%, hsl(${h}, 80%, 55%), hsl(${h}, 85%, 32%))`;
-        cell.style.color = numTextColor(h);
+        cell.style.background = isPowerball
+          ? 'radial-gradient(circle at 35% 35%, #ffffff, #c8c8d4)'
+          : `radial-gradient(circle at 35% 35%, hsl(${h}, 80%, 55%), hsl(${h}, 85%, 32%))`;
+        cell.style.color = isPowerball ? '#0b1140' : numTextColor(h);
         row.appendChild(cell);
-      }
+      });
       ghostRowEl.appendChild(row);
       // Force a reflow so the browser picks up the initial state
       // before the `.ghost-rested` class is added — otherwise the
@@ -1139,7 +1133,7 @@ export default function BubbleWrapFidget() {
           const num = mesh.userData?.number;
           if (mesh.visible && num != null) {
             mesh.material.map?.dispose();
-            mesh.material.map = getBallTexture(num);
+            mesh.material.map = getBallTexture(num, !!mesh.userData?.white);
             mesh.material.needsUpdate = true;
           }
         }
