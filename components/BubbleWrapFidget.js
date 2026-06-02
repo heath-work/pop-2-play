@@ -7,7 +7,7 @@ import * as THREE from 'three';
    badge sits in the top-right corner of the viewport so you can
    confirm at a glance that the iOS PWA cache has picked up the
    latest build. */
-const APP_VERSION = 'v01';
+const APP_VERSION = 'v12';
 
 /* ════════════════════════════════════════════════════════════════════
    3D LOTTO BALL TEXTURE — ported from the shakeit app.
@@ -77,6 +77,20 @@ const DISC_POSITIONS = [
 ];
 const DISC_ANGULAR_R = 0.69;
 
+/* Six-disc antiprism layout — 3 upper lats + 3 lower lats, offset
+   60° in longitude so adjacent disc centres are ~0.83 rad apart.
+   Used by the intro ball (free-tumbling) so there's always a disc
+   near the camera; the 2-disc layout above is fine for in-game
+   balls which always settle to the same front-facing pose. */
+const ANTIPRISM_DISC_POSITIONS = [
+  [ 36 * Math.PI / 180,  30 * Math.PI / 180],
+  [ 36 * Math.PI / 180, 150 * Math.PI / 180],
+  [ 36 * Math.PI / 180, 270 * Math.PI / 180],
+  [-36 * Math.PI / 180,  90 * Math.PI / 180],
+  [-36 * Math.PI / 180, 210 * Math.PI / 180],
+  [-36 * Math.PI / 180, 330 * Math.PI / 180],
+];
+
 function buildStamp(number, textColorOverride) {
   const SIZE = 128;
   const stamp = document.createElement('canvas');
@@ -106,10 +120,10 @@ function buildStamp(number, textColorOverride) {
   return { size: SIZE, data: sctx.getImageData(0, 0, SIZE, SIZE) };
 }
 
-function warpDisc(texData, W, H, lat0, lon0, stamp) {
+function warpDisc(texData, W, H, lat0, lon0, stamp, angularR) {
   const sData = stamp.data.data;
   const SIZE = stamp.size;
-  const R = DISC_ANGULAR_R;
+  const R = angularR != null ? angularR : DISC_ANGULAR_R;
   const cosR = Math.cos(R), sinR = Math.sin(R);
   const cLat = Math.cos(lat0), sLat = Math.sin(lat0);
   const vMax = Math.min(1, (lat0 + R) / Math.PI + 0.5);
@@ -155,36 +169,45 @@ function warpDisc(texData, W, H, lat0, lon0, stamp) {
   }
 }
 
-function makeBallTexture(number, white = false) {
+function makeBallTexture(number, white = false, opts = {}) {
   const W = 512, H = 256;
   const cvs = document.createElement('canvas');
   cvs.width = W; cvs.height = H;
   const ctx = cvs.getContext('2d');
 
-  // Solid base colour — `white=true` overrides the hue lookup so the
-  // 8th (powerball) ball renders white with dark navy glyphs.
-  ctx.fillStyle = white ? '#f4f4f6' : ballFillCss(ballHue(number));
+  // Solid base colour:
+  //   opts.fill      → explicit override (intro ball, etc.)
+  //   white=true     → 8th-position powerball treatment
+  //   default        → hue lookup from the ball's number
+  ctx.fillStyle = opts.fill
+    ? opts.fill
+    : (white ? '#f4f4f6' : ballFillCss(ballHue(number)));
   ctx.fillRect(0, 0, W, H);
 
   // Vertical highlight/shadow gradient baked into the texture.
-  // Equirectangular: v=0 is the north pole → top of the rendered ball;
-  // v=1 is the south pole → bottom. A semi-transparent white→clear at
-  // the top adds a glossy sheen; a clear→black at the bottom adds a
-  // soft shadow that grounds the ball. Painted BEFORE the disc stamps
-  // so the number stays unaffected — disc warpDisc overwrites these
-  // pixels where its stamp has alpha.
-  const grad = ctx.createLinearGradient(0, 0, 0, H);
-  grad.addColorStop(0.00, 'rgba(255, 255, 255, 0.42)');
-  grad.addColorStop(0.32, 'rgba(255, 255, 255, 0.00)');
-  grad.addColorStop(0.68, 'rgba(0, 0, 0, 0.00)');
-  grad.addColorStop(1.00, 'rgba(0, 0, 0, 0.40)');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, W, H);
+  // Skipped when `opts.noGradient` is set (intro ball uses real
+  // lighting via MeshStandardMaterial instead of a baked sheen).
+  if (!opts.noGradient) {
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0.00, 'rgba(255, 255, 255, 0.42)');
+    grad.addColorStop(0.32, 'rgba(255, 255, 255, 0.00)');
+    grad.addColorStop(0.68, 'rgba(0, 0, 0, 0.00)');
+    grad.addColorStop(1.00, 'rgba(0, 0, 0, 0.40)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+  }
 
-  const stamp = buildStamp(number, white ? '#0b1140' : null);
+  const stamp = buildStamp(
+    number,
+    opts.textColor || (white ? '#0b1140' : null),
+  );
   const img = ctx.getImageData(0, 0, W, H);
-  for (const [lat, lon] of DISC_POSITIONS) {
-    warpDisc(img.data, W, H, lat, lon, stamp);
+  // Optional disc-layout override — intro ball uses the 6-disc
+  // antiprism so the equator band isn't an empty "hole" mid-spin.
+  const discs = opts.discPositions || DISC_POSITIONS;
+  const angR  = opts.angularR != null ? opts.angularR : DISC_ANGULAR_R;
+  for (const [lat, lon] of discs) {
+    warpDisc(img.data, W, H, lat, lon, stamp, angR);
   }
   ctx.putImageData(img, 0, 0);
   const tex = new THREE.CanvasTexture(cvs);
@@ -1278,6 +1301,165 @@ export default function BubbleWrapFidget() {
     const introStartEl  = document.getElementById('introStart');
     const introAudioEl  = document.getElementById('introAudio');
     const introTiltEl   = document.getElementById('introTilt');
+
+    /* Intro hero ball — a separate Three.js scene drawing one ball
+       (number 35) inside the bubble cutout, slowly spinning on Y.
+       Reuses makeBallTexture() from the module-level renderer so we
+       get the same look as in-game balls. Disposed when the intro
+       overlay is dismissed. */
+    let disposeIntroBall = null;
+    (function initIntroBall() {
+      const introBallCanvas = document.getElementById('introBallCanvas');
+      if (!introBallCanvas) return;
+      const renderer = new THREE.WebGLRenderer({
+        canvas: introBallCanvas, antialias: true, alpha: true,
+      });
+      renderer.setClearColor(0x000000, 0);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      function sizeTo() {
+        const r = introBallCanvas.getBoundingClientRect();
+        const w = Math.max(1, Math.round(r.width));
+        const h = Math.max(1, Math.round(r.height));
+        renderer.setSize(w, h, false);
+        camera.left = -w / 2; camera.right = w / 2;
+        camera.top  =  h / 2; camera.bottom = -h / 2;
+        camera.updateProjectionMatrix();
+        // Ball sits at ~62% of the bubble's inner diameter — leaves
+        // room for the bubble's edge glow / rim to read around it.
+        mesh.scale.setScalar(Math.min(w, h) * 0.31);
+      }
+      const scene  = new THREE.Scene();
+      const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 2000);
+      // Camera positioned FAR outside the largest sphere we'll
+      // render (ball radius scales with canvas; up to ~80 px).
+      // Previously camera.position.z = 50 put the camera INSIDE the
+      // sphere → back-face culling hid the whole front, leaving only
+      // a thin ring where the sphere passed the camera plane (the
+      // "donut hole" bug). Orthographic projection means moving the
+      // camera back doesn't change apparent size.
+      camera.position.z = 800;
+
+      // Lighting temporarily disabled — using MeshBasicMaterial below
+      // so the texture renders unlit (pure pink at 100% saturation,
+      // no light direction or shadow). Re-enable by adding the
+      // AmbientLight + DirectionalLight pair back and swapping to
+      // MeshStandardMaterial with emissive matching the fill.
+
+      const geometry = new THREE.SphereGeometry(1, 64, 64);
+      const tex = makeBallTexture(35, false, {
+        fill: '#EF40D5',
+        textColor: '#ffffff',
+        discPositions: ANTIPRISM_DISC_POSITIONS,
+        angularR: 0.40,
+        noGradient: true,
+      });
+      const mat = new THREE.MeshBasicMaterial({ map: tex });
+      const mesh = new THREE.Mesh(geometry, mat);
+      mesh.rotation.set(FINAL_ROT_X, FINAL_ROT_Y, 0);
+      scene.add(mesh);
+      sizeTo();
+      const ro = (typeof ResizeObserver !== 'undefined')
+        ? new ResizeObserver(sizeTo) : null;
+      if (ro) ro.observe(introBallCanvas);
+      // Multi-axis auto-tumble with periodic random direction
+       // changes. While the user is dragging, auto-tumble pauses
+       // and rotation comes directly from pointer delta; on
+       // release, the drag's last velocity carries into the
+       // auto-tumble lerp so motion stays continuous.
+      let vx = 0.006, vy = 0.012, vz = 0.004;
+      let tx = vx,    ty = vy,    tz = vz;
+      let lastShuffle = 0;
+      const SHUFFLE_EVERY = 2500;            // ms
+      const MAX_SPEED    = 0.022;            // rad / frame
+      const LERP         = 0.04;             // toward target per frame
+      function shuffle() {
+        const rand = () => (Math.random() - 0.5) * 2 * MAX_SPEED;
+        tx = rand(); ty = rand(); tz = rand();
+      }
+
+      // ── Drag handling ──
+      const dragEl = document.getElementById('introDragSurface');
+      let dragging = false;
+      let lastDragX = 0, lastDragY = 0;
+      let lastDragT = 0;
+      const DRAG_ROT_GAIN = 0.012;           // rad per pixel of drag
+      if (dragEl) {
+        dragEl.addEventListener('pointerdown', (ev) => {
+          dragging = true;
+          dragEl.classList.add('dragging');
+          dragEl.setPointerCapture(ev.pointerId);
+          lastDragX = ev.clientX;
+          lastDragY = ev.clientY;
+          lastDragT = performance.now();
+          // Pause auto-shuffle while dragging.
+          vx = vy = vz = 0;
+        }, { signal });
+        dragEl.addEventListener('pointermove', (ev) => {
+          if (!dragging) return;
+          const dx = ev.clientX - lastDragX;
+          const dy = ev.clientY - lastDragY;
+          const now = performance.now();
+          const dt = Math.max(1, now - lastDragT);
+          // Horizontal drag → Y rotation, vertical drag → X.
+          mesh.rotation.y += dx * DRAG_ROT_GAIN;
+          mesh.rotation.x += dy * DRAG_ROT_GAIN;
+          // Capture velocity for momentum after release.
+          vy = (dx * DRAG_ROT_GAIN) * (16 / dt);
+          vx = (dy * DRAG_ROT_GAIN) * (16 / dt);
+          vz = 0;
+          lastDragX = ev.clientX;
+          lastDragY = ev.clientY;
+          lastDragT = now;
+        }, { signal });
+        const endDrag = (ev) => {
+          if (!dragging) return;
+          dragging = false;
+          dragEl.classList.remove('dragging');
+          try { dragEl.releasePointerCapture(ev.pointerId); } catch (_) {}
+          // Clamp residual velocity so a wild swipe doesn't spin
+          // forever before the auto-tumble lerps it down.
+          const cap = MAX_SPEED * 3;
+          vx = Math.max(-cap, Math.min(cap, vx));
+          vy = Math.max(-cap, Math.min(cap, vy));
+          // Trigger an immediate shuffle so the auto-tumble takes
+          // back over with a new direction.
+          lastShuffle = performance.now() - SHUFFLE_EVERY;
+        };
+        dragEl.addEventListener('pointerup',     endDrag, { signal });
+        dragEl.addEventListener('pointercancel', endDrag, { signal });
+      }
+
+      let raf;
+      let stopped = false;
+      function tick(now) {
+        if (stopped) return;
+        raf = requestAnimationFrame(tick);
+        if (!dragging) {
+          if (!lastShuffle || now - lastShuffle > SHUFFLE_EVERY) {
+            shuffle();
+            lastShuffle = now;
+          }
+          vx += (tx - vx) * LERP;
+          vy += (ty - vy) * LERP;
+          vz += (tz - vz) * LERP;
+          mesh.rotation.x += vx;
+          mesh.rotation.y += vy;
+          mesh.rotation.z += vz;
+        }
+        renderer.render(scene, camera);
+      }
+      raf = requestAnimationFrame(tick);
+      disposeIntroBall = () => {
+        stopped = true;
+        if (raf) cancelAnimationFrame(raf);
+        ro?.disconnect();
+        geometry.dispose();
+        tex.dispose();
+        mat.dispose();
+        renderer.dispose();
+      };
+    })();
+
     function refreshIntroToggles() {
       if (introAudioEl) introAudioEl.setAttribute('aria-pressed', audioEnabled ? 'true' : 'false');
       if (introTiltEl)  introTiltEl.setAttribute('aria-pressed',  tiltEnabled  ? 'true' : 'false');
@@ -1305,15 +1487,12 @@ export default function BubbleWrapFidget() {
       }
     }, { signal });
     if (introStartEl) introStartEl.addEventListener('click', () => {
-      // Don't call ensureAudio() here — it'd kick off the <audio>
-      // pool's muted-unlock plays in this gesture, and by the time
-      // the user reaches a bubble (a separate gesture), iOS treats
-      // those pool elements as warmed-but-never-used and silently
-      // disables them. Letting the first bubble's pointerdown do
-      // both ensureAudio AND playPop keeps init + first playback
-      // in the same gesture context — matches the original
-      // bubble-wrap-fidget behaviour that worked on iOS.
+      // Don't call ensureAudio() here — see comment in the original
+      // (matches the iOS-friendly bubble-wrap-fidget gesture flow).
       introEl?.classList.add('intro-hide');
+      // Stop the intro ball's rAF + dispose WebGL resources up front
+      // so we don't waste GPU during the fade-out.
+      if (disposeIntroBall) { disposeIntroBall(); disposeIntroBall = null; }
       // Remove from layout once the fade finishes so it stops eating
       // pointer events / breaking the WebGL canvas's interaction layer.
       setTimeout(() => introEl?.remove(), 380);
@@ -1360,6 +1539,7 @@ export default function BubbleWrapFidget() {
 
     return () => {
       ac.abort();
+      if (disposeIntroBall) { disposeIntroBall(); disposeIntroBall = null; }
       if (ro) ro.disconnect();
       if (bubblesEl) bubblesEl.innerHTML = '';
       if (_hapticSwitch && _hapticSwitch.label.parentNode) {
@@ -1382,25 +1562,59 @@ export default function BubbleWrapFidget() {
           of this file on every change you want to verify is live. */}
       <div className="build-version" aria-hidden="true">{APP_VERSION}</div>
 
-      {/* Intro overlay — dismissed by the "Get popping" CTA. The
-          bubble grid renders behind it (blurred via the panel's
-          backdrop-filter). Audio + Tilt toggles preset their game
-          state before the user dives in. */}
+      {/* Retro noise grain — fixed full-screen overlay that lives
+          above everything so the whole UI picks up subtle film-grain
+          texture. */}
+      <div className="noise-overlay" aria-hidden="true" />
+
+      {/* Intro overlay — layered hero (gradient → ball → bubble → logo)
+          plus tagline / CTA / toggles. Dismissed by "Get popping". */}
       <div className="intro" id="intro">
-        <div className="intro-content">
+        {/* Background — radial gradient pulsing subtly. */}
+        <div className="intro-bg" aria-hidden="true" />
+
+        {/* Bubble is now a top-level child of #intro (was nested in
+            .intro-bubble-wrap). Positioned absolutely so it lines up
+            over the ball canvas + drag surface. */}
+        <img
+          src="/intro-bubble.png"
+          className="intro-bubble"
+          alt=""
+          draggable="false"
+        />
+
+        {/* Hero stack: spinning 3D ball with the logo overlapping the
+            bubble's bottom half from in front. */}
+        <div className="intro-hero">
+          <div className="intro-bubble-wrap">
+            <canvas
+              className="intro-ball-canvas"
+              id="introBallCanvas"
+              aria-hidden="true"
+            />
+            <div
+              className="intro-drag-surface"
+              id="introDragSurface"
+              aria-label="Spin the ball"
+            />
+          </div>
           <img
             src="/logo.png"
             className="intro-logo"
             alt="Powerball Pop & Play"
             draggable="false"
           />
-          <p className="intro-tagline">
-            Tap or swipe to pop the bubbles and unlock your lucky numbers.
-          </p>
+        </div>
+
+        <div className="intro-content">
           <button className="intro-cta" id="introStart" type="button">
             Get popping
           </button>
+          <p className="intro-tagline">
+            Tap or swipe to pop the bubbles and unlock your lucky numbers.
+          </p>
         </div>
+
         <div className="intro-toggles">
           <div className="intro-toggle">
             <span className="intro-toggle-label">Audio</span>
