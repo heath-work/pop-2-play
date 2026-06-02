@@ -244,26 +244,23 @@ export default function BubbleWrapFidget() {
 
     if (!stage || !bubblesEl) return;
 
-    /* ── Audio ──────────────────────────────────────────────────
-       Two paths:
-         1. Web Audio (preferred when the buffer is decoded) —
-            lowest latency, easy detune + gain control.
-         2. Fresh `new Audio()` per pop (fallback) — simplest
-            possible iOS path; no pool, no unlock state. Works
-            because every playPop call originates from a user
-            gesture handler (bubble pointerdown / Get popping /
-            Fast select / Skip / row-complete jingle).
-       Browser caches the .wav after the first fetch, so the
-       fallback's per-pop Audio() construction is cheap. */
+    /* ── Audio (Web Audio buffer + <audio> pool fallback) ──────── */
     const POP_SRC = '/bubble-pop.wav';
-    // Audio defaults to OFF. The user explicitly opts in via the
-    // Audio toggle (intro or settings). That toggle click is the
-    // user gesture that creates / resumes the AudioContext, so iOS
-    // has no ambiguity about when audio playback is authorised.
-    let audioEnabled = false;
+    const POP_POOL_SIZE = 8;
+    // Master mute flag — flipped by the Audio toggles. Default ON so
+    // the game has sound out of the box.
+    let audioEnabled = true;
     let audioCtx = null;
     let popBuffer = null;
     let popBufferLoading = false;
+    const popPool = [];
+    let popPoolIdx = 0;
+    let popPoolUnlocked = false;
+    for (let i = 0; i < POP_POOL_SIZE; i++) {
+      const a = new Audio(POP_SRC);
+      a.preload = 'auto';
+      popPool.push(a);
+    }
     function ensureAudio() {
       if (!audioCtx) {
         const AC = window.AudioContext || window.webkitAudioContext;
@@ -273,6 +270,18 @@ export default function BubbleWrapFidget() {
       }
       if (audioCtx && audioCtx.state === 'suspended') {
         audioCtx.resume().catch(() => {});
+      }
+      if (!popPoolUnlocked) {
+        popPoolUnlocked = true;
+        for (const a of popPool) {
+          a.muted = true;
+          const p = a.play();
+          if (p && typeof p.then === 'function') {
+            p.then(() => { a.muted = false; }).catch(() => { a.muted = false; });
+          } else {
+            a.muted = false;
+          }
+        }
       }
     }
     async function loadPopBuffer() {
@@ -285,14 +294,13 @@ export default function BubbleWrapFidget() {
         popBuffer = await new Promise((resolve, reject) =>
           audioCtx.decodeAudioData(data, resolve, reject));
       } catch (err) {
-        console.warn('[pop] Web Audio decode failed:', err);
+        console.warn('[pop] Web Audio decode failed; using <audio> pool:', err);
       } finally {
         popBufferLoading = false;
       }
     }
     function playPop(variation = 0) {
       if (!audioEnabled) return;
-      // Prefer Web Audio when the buffer is decoded.
       if (audioCtx && popBuffer) {
         try {
           const src = audioCtx.createBufferSource();
@@ -305,13 +313,13 @@ export default function BubbleWrapFidget() {
           return;
         } catch (_) {}
       }
-      // Fallback — fresh <audio> per pop. Cheap because the file is
-      // browser-cached after first fetch. Works on iOS as long as
-      // playPop is invoked inside a user-gesture handler, which it
-      // always is (bubble pop, Get popping, Skip, Fast select).
+      const a = popPool[popPoolIdx];
+      popPoolIdx = (popPoolIdx + 1) % POP_POOL_SIZE;
       try {
-        const a = new Audio(POP_SRC);
-        a.playbackRate = 0.92 + variation * 0.04 + Math.random() * 0.14;
+        a.pause();
+        a.muted = false;
+        a.currentTime = 0;
+        a.playbackRate = 0.92 + (variation * 0.04) + Math.random() * 0.14;
         a.volume = 0.85 + Math.random() * 0.15;
         const p = a.play();
         if (p && typeof p.catch === 'function') p.catch(() => {});
@@ -1092,9 +1100,6 @@ export default function BubbleWrapFidget() {
     }, { signal });
     if (settingsAudioEl) settingsAudioEl.addEventListener('click', () => {
       audioEnabled = !audioEnabled;
-      // Same iOS-friendly activation: create / resume AC inside the
-      // gesture so subsequent BufferSource plays just work.
-      if (audioEnabled) ensureAudio();
       refreshSettingsLabels();
     }, { signal });
     if (settingsTiltEl) settingsTiltEl.addEventListener('click', () => {
@@ -1287,9 +1292,6 @@ export default function BubbleWrapFidget() {
     refreshIntroToggles();
     if (introAudioEl) introAudioEl.addEventListener('click', () => {
       audioEnabled = !audioEnabled;
-      // Create / resume the AudioContext inside the gesture so iOS
-      // gets the activation it requires for subsequent plays.
-      if (audioEnabled) ensureAudio();
       refreshIntroToggles();
       refreshSettingsLabels();
     }, { signal });
@@ -1402,7 +1404,7 @@ export default function BubbleWrapFidget() {
               className="intro-switch"
               id="introAudio"
               type="button"
-              aria-pressed="false"
+              aria-pressed="true"
               aria-label="Toggle audio"
             >
               <span className="intro-switch-off">Off</span>
