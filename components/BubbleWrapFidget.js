@@ -1153,10 +1153,19 @@ export default function BubbleWrapFidget() {
        event seeds the "neutral" angle so the user's natural hold
        position reads as no tilt; subsequent events drive a clamped
        small rotation of the .sheet-tilt wrapper.
-       On iOS 13+ the DeviceOrientationEvent API requires explicit
-       permission via a user gesture; we request it on the first
-       pointerdown anywhere on the page. Other platforms skip the
-       permission dance and attach the listener immediately. */
+
+       iOS 13+ Safari requires DeviceOrientationEvent.requestPermission
+       to be called *synchronously* inside a user-gesture handler. We
+       therefore:
+         1. Attach the gesture handler at *capture* phase so it runs
+            before any inner handler (e.g. a bubble button's pointerdown
+            that calls preventDefault).
+         2. Call requestPermission() synchronously — no awaits before
+            it — so the gesture context is intact.
+         3. Attach the orientation listener inside the .then() once
+            permission resolves.
+         4. Fall through to a plain `addEventListener` when the
+            permission API is absent (Android, desktop sensors). */
     let tiltNeutral = null;
     let tiltEnabled = false;
     const sheetTiltEl = document.getElementById('sheetTilt');
@@ -1165,39 +1174,45 @@ export default function BubbleWrapFidget() {
       if (!tiltNeutral) tiltNeutral = { beta: e.beta, gamma: e.gamma };
       const db = e.beta  - tiltNeutral.beta;   // pitch (forward/back)
       const dg = e.gamma - tiltNeutral.gamma;  // roll  (left/right)
-      // Map ~22° of physical tilt to ~6° of rotation — subtle, never
-      // distracting. Sign flip on X so tipping the top of the phone
-      // away from the user tilts the sheet toward the camera.
       const MAX = 6;
       const tiltX = Math.max(-MAX, Math.min(MAX, -db * (MAX / 22)));
       const tiltY = Math.max(-MAX, Math.min(MAX,  dg * (MAX / 22)));
       sheetTiltEl.style.setProperty('--tilt-x', tiltX.toFixed(2) + 'deg');
       sheetTiltEl.style.setProperty('--tilt-y', tiltY.toFixed(2) + 'deg');
     }
-    async function enableTilt() {
+    function attachOrientationListener() {
       if (tiltEnabled) return;
-      if (typeof window === 'undefined' || typeof DeviceOrientationEvent === 'undefined') return;
-      const needsPerm =
-        typeof DeviceOrientationEvent.requestPermission === 'function';
-      try {
-        if (needsPerm) {
-          const result = await DeviceOrientationEvent.requestPermission();
-          if (result !== 'granted') return;
-        }
-        window.addEventListener('deviceorientation', onTilt, { signal });
-        tiltEnabled = true;
-      } catch {
-        /* user denied or API unavailable — sheet just stays flat */
+      window.addEventListener('deviceorientation', onTilt);
+      tiltEnabled = true;
+    }
+    function enableTiltOnGesture() {
+      if (tiltEnabled) return;
+      if (typeof DeviceOrientationEvent === 'undefined') return;
+      // Call requestPermission SYNCHRONOUSLY in the gesture handler —
+      // do NOT use await here; the gesture context dies on the first
+      // await tick and iOS silently drops the permission dialog.
+      if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+        DeviceOrientationEvent.requestPermission()
+          .then((result) => {
+            if (result === 'granted') attachOrientationListener();
+          })
+          .catch(() => { /* denied or API failure */ });
+      } else {
+        attachOrientationListener();
       }
     }
-    // Try immediately for platforms that don't need permission (Android,
-    // most desktop sensors). On iOS this no-ops, then the pointerdown
-    // listener triggers the permission request on first touch.
-    if (typeof DeviceOrientationEvent !== 'undefined' &&
-        typeof DeviceOrientationEvent.requestPermission !== 'function') {
-      enableTilt();
+    // Capture-phase so this runs BEFORE any bubble-button pointerdown.
+    // Self-removes once tilt is enabled (or permission denied — we
+    // don't keep prompting on every tap).
+    function onFirstGesture() {
+      enableTiltOnGesture();
+      window.removeEventListener('pointerdown', onFirstGesture, true);
+      window.removeEventListener('touchstart',  onFirstGesture, true);
+      window.removeEventListener('click',       onFirstGesture, true);
     }
-    window.addEventListener('pointerdown', enableTilt, { once: true, signal });
+    window.addEventListener('pointerdown', onFirstGesture, { capture: true, signal });
+    window.addEventListener('touchstart',  onFirstGesture, { capture: true, signal });
+    window.addEventListener('click',       onFirstGesture, { capture: true, signal });
 
     /* Rebake ball textures once SharpGrotesk Medium has loaded. Canvas
        2d uses the OS fallback if the font isn't ready when fillText is
