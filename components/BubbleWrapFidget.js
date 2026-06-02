@@ -244,20 +244,17 @@ export default function BubbleWrapFidget() {
 
     if (!stage || !bubblesEl) return;
 
-    /* ── Audio (Web Audio only) ─────────────────────────────────
-       The pop sound is fetched as an ArrayBuffer, decoded once into
-       a reusable AudioBuffer, and replayed by spinning up a fresh
-       AudioBufferSourceNode per pop. Every play* path early-returns
-       when `audioEnabled` is false (driven by the Audio toggles).
-
-       The old design layered an <audio> pool fallback on top of the
-       Web Audio path with a muted-unlock primer; that pattern was
-       fragile on iOS (the unlocked elements would freeze if not
-       used within the same gesture). Since every play call here
-       originates from a user gesture (bubble tap, Get popping,
-       Fast select), Web Audio alone is enough — `ensureAudio()`
-       creates / resumes the AudioContext synchronously inside the
-       gesture, and `playPop` just spawns a BufferSource. */
+    /* ── Audio ──────────────────────────────────────────────────
+       Two paths:
+         1. Web Audio (preferred when the buffer is decoded) —
+            lowest latency, easy detune + gain control.
+         2. Fresh `new Audio()` per pop (fallback) — simplest
+            possible iOS path; no pool, no unlock state. Works
+            because every playPop call originates from a user
+            gesture handler (bubble pointerdown / Get popping /
+            Fast select / Skip / row-complete jingle).
+       Browser caches the .wav after the first fetch, so the
+       fallback's per-pop Audio() construction is cheap. */
     const POP_SRC = '/bubble-pop.wav';
     let audioEnabled = true;
     let audioCtx = null;
@@ -290,15 +287,30 @@ export default function BubbleWrapFidget() {
       }
     }
     function playPop(variation = 0) {
-      if (!audioEnabled || !audioCtx || !popBuffer) return;
+      if (!audioEnabled) return;
+      // Prefer Web Audio when the buffer is decoded.
+      if (audioCtx && popBuffer) {
+        try {
+          const src = audioCtx.createBufferSource();
+          src.buffer = popBuffer;
+          src.detune.value = variation * 30 + (Math.random() * 60 - 30);
+          const gain = audioCtx.createGain();
+          gain.gain.value = 0.85 + Math.random() * 0.15;
+          src.connect(gain).connect(audioCtx.destination);
+          src.start();
+          return;
+        } catch (_) {}
+      }
+      // Fallback — fresh <audio> per pop. Cheap because the file is
+      // browser-cached after first fetch. Works on iOS as long as
+      // playPop is invoked inside a user-gesture handler, which it
+      // always is (bubble pop, Get popping, Skip, Fast select).
       try {
-        const src = audioCtx.createBufferSource();
-        src.buffer = popBuffer;
-        src.detune.value = variation * 30 + (Math.random() * 60 - 30);
-        const gain = audioCtx.createGain();
-        gain.gain.value = 0.85 + Math.random() * 0.15;
-        src.connect(gain).connect(audioCtx.destination);
-        src.start();
+        const a = new Audio(POP_SRC);
+        a.playbackRate = 0.92 + variation * 0.04 + Math.random() * 0.14;
+        a.volume = 0.85 + Math.random() * 0.15;
+        const p = a.play();
+        if (p && typeof p.catch === 'function') p.catch(() => {});
       } catch (_) {}
     }
     const ROW_COMPLETE_NOTE_FREQS    = [523.25, 659.25, 783.99];
