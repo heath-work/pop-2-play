@@ -293,18 +293,6 @@ export default function BubbleWrapFidget() {
         const data = await res.arrayBuffer();
         popBuffer = await new Promise((resolve, reject) =>
           audioCtx.decodeAudioData(data, resolve, reject));
-        // Warm the Web Audio path with a near-silent pre-play so the
-        // first real pop doesn't glitch on a cold audio pipeline
-        // (iOS in particular needs this — the first playback through
-        // a fresh AudioContext can scrub/click).
-        try {
-          const src = audioCtx.createBufferSource();
-          src.buffer = popBuffer;
-          const g = audioCtx.createGain();
-          g.gain.value = 0.0001;
-          src.connect(g).connect(audioCtx.destination);
-          src.start();
-        } catch (_) {}
       } catch (err) {
         console.warn('[pop] Web Audio decode failed; using <audio> pool:', err);
       } finally {
