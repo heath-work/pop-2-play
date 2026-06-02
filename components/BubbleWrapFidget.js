@@ -1275,7 +1275,14 @@ export default function BubbleWrapFidget() {
       }
     }, { signal });
     if (introStartEl) introStartEl.addEventListener('click', () => {
-      ensureAudio();
+      // Don't call ensureAudio() here — it'd kick off the <audio>
+      // pool's muted-unlock plays in this gesture, and by the time
+      // the user reaches a bubble (a separate gesture), iOS treats
+      // those pool elements as warmed-but-never-used and silently
+      // disables them. Letting the first bubble's pointerdown do
+      // both ensureAudio AND playPop keeps init + first playback
+      // in the same gesture context — matches the original
+      // bubble-wrap-fidget behaviour that worked on iOS.
       introEl?.classList.add('intro-hide');
       // Remove from layout once the fade finishes so it stops eating
       // pointer events / breaking the WebGL canvas's interaction layer.
