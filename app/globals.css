@@ -96,15 +96,12 @@ body {
   background: transparent;
 }
 
-/* Status-bar safe area — opaque navy strip across the iOS notch area
-   so signal/clock icons read against it instead of the bubble grid. */
+/* Status-bar safe-area strip — kept in the DOM (JS still references it)
+   but visually disabled. Used to paint an opaque navy band across the
+   iOS notch area; on the new design the bubble frame sits 16px from
+   the viewport top and was being clipped by this spacer. */
 .status-spacer {
-  position: absolute;
-  top: 0; left: 0; right: 0;
-  height: calc(44px + env(safe-area-inset-top, 0px));
-  background: var(--status-bg);
-  pointer-events: none;
-  z-index: 5;
+  display: none;
 }
 
 /* ── Bubble grid ──────────────────────────────────────────────── */
@@ -560,33 +557,11 @@ body {
 }
 .toast.visible { opacity: 1; }
 
-/* ── Game-complete banner — keep but restyle to purple ────────── */
+/* Game-complete banner — JS still toggles .is-active for future
+   reskin, but visually disabled until the new celebration design
+   replaces it. */
 .game-message {
-  position: fixed;
-  bottom: 0;
-  left: 50%;
-  width: 210px;
-  height: 53px;
-  background: linear-gradient(180deg, #6b3df0, #4a1f96);
-  border-radius: 12px;
-  border: 1px solid rgba(255,255,255,0.18);
-  pointer-events: none;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--ui-font);
-  font-size: 18px;
-  letter-spacing: 0.06em;
-  color: #fff;
-  text-transform: uppercase;
-  transform: translateX(-50%) translateY(0);
-  visibility: hidden;
-  --tray-h: 240px;
-}
-.game-message.is-active {
-  visibility: visible;
-  animation: game-message-pop 1.8s linear forwards;
+  display: none;
 }
 @keyframes game-message-pop {
   0%   { transform: translateX(-50%) translateY(0); }
