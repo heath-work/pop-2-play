@@ -7,7 +7,7 @@ import * as THREE from 'three';
    badge sits in the top-right corner of the viewport so you can
    confirm at a glance that the iOS PWA cache has picked up the
    latest build. */
-const APP_VERSION = 'v19';
+const APP_VERSION = 'v21';
 
 /* ════════════════════════════════════════════════════════════════════
    3D LOTTO BALL TEXTURE — ported from the shakeit app.
@@ -580,7 +580,10 @@ export default function BubbleWrapFidget() {
     function popBubble(num) {
       const state = bubbleStates.get(num);
       if (!state || state.popped || state.popping) return false;
-      if (gameCompleting) return false;
+      // Note: NO `gameCompleting` block here — when a row just
+      // completed we let pops keep flowing; addSelected will
+      // immediately advance the game state so the new pop lands
+      // in the next row without the user feeling any pause.
       state.popping = true;
       const el = bubbleEls.get(num);
       if (!el) return false;
@@ -1009,7 +1012,34 @@ export default function BubbleWrapFidget() {
       });
     }
 
+    // Idempotent — does the row-complete work (clear active balls,
+    // populate ghosts, bump game counter, reset selections). May be
+    // called twice for the same row: once eagerly when the user pops
+    // again during the settle wait, and once from the deferred
+    // setTimeout when the last drop animation finishes. The
+    // `gameCompleting` guard makes the second call a no-op.
+    function advanceRow(completedRow) {
+      if (!gameCompleting) return;
+      gameCompleting = false;
+      clearAllBalls(false);
+      populateGhostRow(completedRow);
+      currentGame++;
+      currentSelections = [];
+      viewedGameIdx = currentGame;
+      refreshPill();
+    }
+
     function addSelected(num) {
+      // If the previous row just completed and is still in its
+      // settle-wait window, advance NOW so this new pop lands in
+      // the next row instead of being blocked. The deferred timeout
+      // from the previous addSelected call will fire later and
+      // no-op via advanceRow's guard.
+      if (gameCompleting) {
+        const prev = allGames[currentGame];
+        if (prev) advanceRow(prev);
+      }
+
       currentSelections.push(num);
       viewedGameIdx = currentGame;
       const slotIdx = currentSelections.length - 1;
@@ -1027,28 +1057,21 @@ export default function BubbleWrapFidget() {
         allGames[currentGame] = completedRow;
         playRowComplete();
         triggerGameCompleteCelebration();
-        // Let the last ball settle, then hand off to the CSS ghost
-        // row. All inter-row timings halve when fast select is queued.
+        // Schedule the row-advance for after the last ball's drop
+        // animation. If the user pops again before this fires,
+        // addSelected (above) calls advanceRow eagerly and this
+        // becomes a no-op via the gameCompleting guard.
         const fast = autoPlayQueue > 0;
         const settleWait  = (fast ? SPIN_DURATION_MS / 2 : SPIN_DURATION_MS) + 80;
-        const ghostWait   = fast ? 210 : 420;
         const nextRowWait = fast ? 180 : 360;
         setTimeout(() => {
-          clearAllBalls(false);
-          populateGhostRow(completedRow);
-          setTimeout(() => {
-            currentGame++;
-            currentSelections = [];
-            viewedGameIdx = currentGame;
-            refreshPill();
-            gameCompleting = false;
-            if (autoPlayQueue > 0) {
-              autoPlayQueue--;
-              if (autoPlayQueue > 0 || currentGame < totalGames) {
-                setTimeout(autoFillCurrentRow, nextRowWait);
-              }
+          advanceRow(completedRow);
+          if (autoPlayQueue > 0) {
+            autoPlayQueue--;
+            if (autoPlayQueue > 0 || currentGame < totalGames) {
+              setTimeout(autoFillCurrentRow, nextRowWait);
             }
-          }, ghostWait);
+          }
         }, settleWait);
         refreshPill();
         return;
