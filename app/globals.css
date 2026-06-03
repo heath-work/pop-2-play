@@ -678,6 +678,78 @@ body {
 /* ── Lotto-man celebration: hidden in this redesign ───────────── */
 .lotto-man-arc { display: none; }
 
+/* ── Outro overlay — fades in once the user finishes the selected
+   number of games. Same dark-blue blurred treatment as the
+   settings modal backdrop, but contains the celebratory copy
+   directly (not a panel-inside-overlay). */
+.outro {
+  position: fixed;
+  inset: 0;
+  z-index: 250;                            /* below the build badge + settings, above intro */
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 28px;
+  text-align: center;
+  background: rgba(0, 8, 60, 0.78);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  backdrop-filter: blur(14px) saturate(140%);
+  opacity: 0;
+  transition: opacity 380ms ease-out;
+}
+.outro.outro-show {
+  display: flex;
+  opacity: 1;
+}
+.outro-title {
+  font-family: 'SharpGrotesk', var(--ctl-font);
+  font-size: 30px;
+  font-weight: 500;
+  color: #fff;
+  margin: 0 0 22px;
+  letter-spacing: -0.005em;
+  text-rendering: geometricPrecision;
+}
+.outro-body {
+  font-family: 'SharpGrotesk', var(--ctl-font);
+  font-size: 17px;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.92);
+  line-height: 1.4;
+  max-width: 320px;
+  margin: 0 0 38px;
+  text-rendering: geometricPrecision;
+}
+.outro-cta {
+  height: 48px;
+  min-width: 280px;
+  border-radius: 999px;
+  background: rgba(180, 160, 240, 0.32);
+  border: 1px solid rgba(200, 180, 255, 0.45);
+  color: #fff;
+  font-family: 'SharpGrotesk', var(--ctl-font);
+  font-size: 19px;
+  font-weight: 400;
+  cursor: pointer;
+  padding: 0 32px;
+  text-rendering: geometricPrecision;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  transition: background 180ms ease, transform 120ms ease;
+}
+.outro-cta:hover  { background: rgba(180, 160, 240, 0.42); }
+.outro-cta:active { transform: translateY(1px); }
+.outro-subtext {
+  font-family: 'SharpGrotesk', var(--ctl-font);
+  font-size: 13px;
+  font-weight: 400;
+  color: rgba(220, 200, 255, 0.7);
+  margin: 22px 0 0;
+  text-rendering: geometricPrecision;
+}
+
 /* ── Settings modal — glass panel over a dark-blue blurred overlay,
    opened by the bottom-bar ellipsis button. */
 .settings-backdrop {
@@ -1012,3 +1084,34 @@ body {
 /* Dim whichever label is inactive. */
 .intro-switch[aria-pressed="false"] .intro-switch-on  { color: rgba(255, 255, 255, 0.55); }
 .intro-switch[aria-pressed="true"]  .intro-switch-off { color: rgba(255, 255, 255, 0.55); }
+
+/* Games select — same pill aesthetic as the on/off toggles, but a
+   native <select> for picking 4–50. Right-side chevron drawn via
+   an inline SVG data URI so we don't need an extra asset. */
+.intro-select {
+  height: 32px;
+  border-radius: 999px;
+  background: transparent;
+  border: 2px solid rgba(170, 130, 255, 0.55);
+  color: #fff;
+  font-family: 'SharpGrotesk', var(--ctl-font);
+  font-size: 14px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  padding: 0 30px 0 18px;
+  cursor: pointer;
+  text-align: center;
+  text-rendering: geometricPrecision;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%23ffffff' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 10px 6px;
+}
+/* Native option list gets system styling, but we can hint it. */
+.intro-select option {
+  background: #1B0C4C;
+  color: #fff;
+}

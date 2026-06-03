@@ -7,7 +7,7 @@ import * as THREE from 'three';
    badge sits in the top-right corner of the viewport so you can
    confirm at a glance that the iOS PWA cache has picked up the
    latest build. */
-const APP_VERSION = 'v25';
+const APP_VERSION = 'v27';
 
 /* ════════════════════════════════════════════════════════════════════
    3D LOTTO BALL TEXTURE — ported from the shakeit app.
@@ -603,6 +603,12 @@ export default function BubbleWrapFidget() {
     function popBubble(num) {
       const state = bubbleStates.get(num);
       if (!state || state.popped || state.popping) return false;
+      // Game-limit block: once the user has completed their
+      // selected number of games, no more pops register. (The
+      // outro overlay also fades in on top, but this guard handles
+      // the brief window between the last row completing and the
+      // overlay actually showing.)
+      if (currentGame >= totalGames) return false;
       // Note: NO `gameCompleting` block here — when a row just
       // completed we let pops keep flowing; addSelected will
       // immediately advance the game state so the new pop lands
@@ -691,11 +697,17 @@ export default function BubbleWrapFidget() {
     let gameCompleting = false;
 
     function refreshPill() {
+      // Clamp the visible game number so the pill / label never read
+      // "21/20" the moment the final row's advanceRow pushes
+      // currentGame past the limit. The actual currentGame stays at
+      // its post-advance value so the >= totalGames checks (outro
+      // trigger, pop block) still fire.
+      const shown = Math.min(viewedGameIdx + 1, totalGames);
       if (ctaPillCountEl) {
-        ctaPillCountEl.textContent = `${viewedGameIdx + 1}/${totalGames}`;
+        ctaPillCountEl.textContent = `${shown}/${totalGames}`;
       }
       if (gameLabelEl) {
-        gameLabelEl.textContent = `Game ${viewedGameIdx + 1}/${totalGames}`;
+        gameLabelEl.textContent = `Game ${shown}/${totalGames}`;
       }
       if (ctaPillProgressEl) {
         /* pathLength="100" on the SVG rect normalises the perimeter to
@@ -1109,8 +1121,14 @@ export default function BubbleWrapFidget() {
         // its drop in the OLD bank while any subsequent pop drops
         // a brand-new ball into the NEW bank.
         advanceRow(completedRow);
-        // Fast-select cascade still spaces its automated pops.
-        if (autoPlayQueue > 0) {
+        // Full-completion check: if the user has finished the last
+        // game of their selection, stop the fast-select cascade
+        // and fade in the outro overlay after enough time for the
+        // last drop animation to land.
+        if (currentGame >= totalGames) {
+          autoPlayQueue = 0;
+          setTimeout(showOutro, SPIN_DURATION_MS + 200);
+        } else if (autoPlayQueue > 0) {
           autoPlayQueue--;
           if (autoPlayQueue > 0 || currentGame < totalGames) {
             const fast = autoPlayQueue > 0;
@@ -1131,6 +1149,7 @@ export default function BubbleWrapFidget() {
     function resetAll() {
       autoPlayQueue = 0;
       gameCompleting = false;
+      hideOutro();
       currentGame = 0;
       currentSelections = [];
       viewedGameIdx = 0;
@@ -1379,6 +1398,21 @@ export default function BubbleWrapFidget() {
     const introStartEl  = document.getElementById('introStart');
     const introAudioEl  = document.getElementById('introAudio');
     const introTiltEl   = document.getElementById('introTilt');
+    const introGamesEl  = document.getElementById('introGames');
+
+    /* ── Outro overlay ─────────────────────────────────────────── */
+    const outroEl     = document.getElementById('outro');
+    const outroViewEl = document.getElementById('outroViewTicket');
+    function showOutro() {
+      if (!outroEl) return;
+      outroEl.setAttribute('aria-hidden', 'false');
+      outroEl.classList.add('outro-show');
+    }
+    function hideOutro() {
+      if (!outroEl) return;
+      outroEl.classList.remove('outro-show');
+      outroEl.setAttribute('aria-hidden', 'true');
+    }
 
     /* Intro hero ball — a separate Three.js scene drawing one ball
        (number 35) inside the bubble cutout, slowly spinning on Y.
@@ -1569,6 +1603,29 @@ export default function BubbleWrapFidget() {
       if (introTiltEl)  introTiltEl.setAttribute('aria-pressed',  tiltEnabled  ? 'true' : 'false');
     }
     refreshIntroToggles();
+    // Games-count selector — drives totalGames so the bottom pill
+    // and the outro-trigger check both pick up the user's choice.
+    if (introGamesEl) {
+      introGamesEl.value = String(totalGames);
+      introGamesEl.addEventListener('change', () => {
+        const v = parseInt(introGamesEl.value, 10);
+        if (Number.isFinite(v) && v >= 4 && v <= 50) {
+          totalGames = v;
+          refreshPill();
+        }
+      }, { signal });
+    }
+    if (outroViewEl) outroViewEl.addEventListener('click', () => {
+      // For now: View my ticket sends the user back to the intro
+      // (matches Exit Game's flow). Hook the real ticket view here
+      // when the ticket screen is built.
+      hideOutro();
+      resetAll();
+      if (introEl) {
+        introEl.classList.remove('intro-hide');
+        if (resumeIntroBall) resumeIntroBall();
+      }
+    }, { signal });
     if (introAudioEl) introAudioEl.addEventListener('click', () => {
       audioEnabled = !audioEnabled;
       refreshIntroToggles();
@@ -1721,6 +1778,19 @@ export default function BubbleWrapFidget() {
 
         <div className="intro-toggles">
           <div className="intro-toggle">
+            <span className="intro-toggle-label">Games</span>
+            <select
+              className="intro-select"
+              id="introGames"
+              aria-label="Number of games"
+              defaultValue={String(DEFAULT_GAMES)}
+            >
+              {Array.from({ length: 47 }, (_, i) => i + 4).map(n => (
+                <option key={n} value={n}>{n}</option>
+              ))}
+            </select>
+          </div>
+          <div className="intro-toggle">
             <span className="intro-toggle-label">Audio</span>
             <button
               className="intro-switch"
@@ -1872,6 +1942,23 @@ export default function BubbleWrapFidget() {
           bubble's screen position (up in the stage area) down to its
           slot in the tray, all in one continuous Three.js scene. */}
       <canvas className="ball-overlay" id="ballOverlay" />
+
+      {/* Outro overlay — fades in once the user finishes all
+          selected games. View my ticket dismisses it and returns
+          to the intro. */}
+      <div className="outro" id="outro" aria-hidden="true">
+        <h1 className="outro-title">All done, pop star.</h1>
+        <p className="outro-body">
+          Your numbers are locked, your rows are full, and your
+          ticket is ready for its big moment.
+        </p>
+        <button className="outro-cta" id="outroViewTicket" type="button">
+          View my ticket
+        </button>
+        <p className="outro-subtext">
+          (No bubbles were harmed in the making of this ticket.)
+        </p>
+      </div>
 
       {/* Settings modal — opened by the bottom-bar … button. Glass
           panel over a dark-blue blurred overlay; clicking the
