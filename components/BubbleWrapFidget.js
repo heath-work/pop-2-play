@@ -7,7 +7,7 @@ import * as THREE from 'three';
    badge sits in the top-right corner of the viewport so you can
    confirm at a glance that the iOS PWA cache has picked up the
    latest build. */
-const APP_VERSION = 'v29';
+const APP_VERSION = 'v31';
 
 /* ════════════════════════════════════════════════════════════════════
    3D LOTTO BALL TEXTURE — ported from the shakeit app.
@@ -723,16 +723,22 @@ export default function BubbleWrapFidget() {
     let currentSelections = [];
     const allGames = [];
     let viewedGameIdx = 0;
+    // displayedGameIdx lags behind viewedGameIdx during the row-
+    // complete handoff: viewedGameIdx (and currentGame) bump up
+    // the instant the 8th ball pops so logic stays correct, but
+    // the count displayed on the pill only ticks over once the
+    // previous row's balls have actually disappeared from screen.
+    // advanceRow's hide-bank timeout updates this.
+    let displayedGameIdx = 0;
     let totalGames = DEFAULT_GAMES;
     let gameCompleting = false;
 
     function refreshPill() {
-      // Clamp the visible game number so the pill / label never read
-      // "21/20" the moment the final row's advanceRow pushes
-      // currentGame past the limit. The actual currentGame stays at
-      // its post-advance value so the >= totalGames checks (outro
-      // trigger, pop block) still fire.
-      const shown = Math.min(viewedGameIdx + 1, totalGames);
+      // Count uses displayedGameIdx (lags) so the X/Y label stays in
+      // sync with what the user sees on screen. Clamped to totalGames
+      // so the final row's advanceRow doesn't push it past the limit
+      // before the hide timeout settles things.
+      const shown = Math.min(displayedGameIdx + 1, totalGames);
       if (ctaPillCountEl) {
         ctaPillCountEl.textContent = `${shown}/${totalGames}`;
       }
@@ -1109,6 +1115,10 @@ export default function BubbleWrapFidget() {
           const m = ballScene.meshes[prevGroupBase + i];
           if (m) m.visible = false;
         }
+        // Now (and only now) catch the displayed count up to the
+        // real game index so the pill ticks over in sync with the
+        // balls disappearing.
+        displayedGameIdx = viewedGameIdx;
         refreshPill();
       }, hideAfter);
     }
@@ -1167,7 +1177,9 @@ export default function BubbleWrapFidget() {
             setTimeout(autoFillCurrentRow, nextRowWait);
           }
         }
-        refreshPill();
+        // No refreshPill() here — advanceRow's deferred timeout
+        // does it once the previous row's balls have hidden, so
+        // the X/Y count stays in sync with what's on screen.
         return;
       }
       refreshPill();
@@ -1184,6 +1196,7 @@ export default function BubbleWrapFidget() {
       currentGame = 0;
       currentSelections = [];
       viewedGameIdx = 0;
+      displayedGameIdx = 0;
       allGames.length = 0;
       // Hide WebGL balls instantly (clearAllBalls iterates all 16
       // meshes across both banks). Reset bank pointer + z counter.
@@ -1290,6 +1303,9 @@ export default function BubbleWrapFidget() {
     }, { signal });
 
     function autoFillCurrentRow() {
+      // Bail if the user has already hit the game limit (Fast select
+      // / Skip cascades shouldn't keep firing past it).
+      if (currentGame >= totalGames) return;
       const needed = NUMBERS_PER_GAME - currentSelections.length;
       if (needed <= 0) return;
       const available = [];
@@ -1299,15 +1315,44 @@ export default function BubbleWrapFidget() {
           available.push(b.num);
         }
       }
-      if (available.length < needed) return;
-      // Fisher-Yates partial shuffle (only need the first `needed` picks)
+      // Fisher-Yates partial shuffle of available
       for (let i = available.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [available[i], available[j]] = [available[j], available[i]];
       }
-      const picks = available.slice(0, needed);
       const popInterval = autoPlayQueue > 0 ? 55 : 110;
+      const toPick = Math.min(needed, available.length);
+
+      if (toPick === 0) {
+        // Sheet is empty (or in the middle of refilling). Wait for
+        // the full refill cycle and retry. Refill timing:
+        //   maybeRefillSheet delay 280
+        // + sheet-out animation     420
+        // + sheet-in animation      540
+        // + small buffer
+        setTimeout(autoFillCurrentRow, 280 + 420 + 540 + 80);
+        return;
+      }
+
+      const picks = available.slice(0, toPick);
       picks.forEach((n, k) => setTimeout(() => popBubble(n), k * popInterval));
+
+      // Not enough bubbles to complete the row this pass — pop what's
+      // available, then schedule a retry AFTER the last pop's
+      // animation finishes and the sheet has refilled. The sheet
+      // refill is automatic via maybeRefillSheet once all bubbles are
+      // popped, which is exactly what happens once these last few
+      // pops land (currentSelections + remaining popped = full sheet).
+      if (toPick < needed) {
+        const lastPopAt = (toPick - 1) * popInterval;
+        //   pop animation               320
+        // + maybeRefillSheet delay      280
+        // + sheet-out animation         420
+        // + sheet-in animation          540
+        // + buffer                      100
+        const refillTotalMs = 320 + 280 + 420 + 540 + 100;
+        setTimeout(autoFillCurrentRow, lastPopAt + refillTotalMs);
+      }
     }
 
     /* ── Toast ─────────────────────────────────────────────────── */
