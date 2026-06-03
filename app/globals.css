@@ -686,7 +686,10 @@ body {
   position: fixed;
   inset: 0;
   z-index: 250;                            /* below the build badge + settings, above intro */
-  display: none;
+  /* Always rendered (no display:none) so the transform transition
+     fires cleanly on the show class. visibility + pointer-events +
+     opacity flip together to hide it the rest of the time. */
+  display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
@@ -695,12 +698,24 @@ body {
   background: rgba(0, 8, 60, 0.78);
   -webkit-backdrop-filter: blur(14px) saturate(140%);
   backdrop-filter: blur(14px) saturate(140%);
+  visibility: hidden;
   opacity: 0;
-  transition: opacity 380ms ease-out;
+  pointer-events: none;
+  transform: translateY(100%);
+  transition:
+    transform 420ms cubic-bezier(.2, 1, .35, 1),
+    opacity   320ms ease-out,
+    visibility 0s linear 420ms;
 }
 .outro.outro-show {
-  display: flex;
+  visibility: visible;
   opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+  transition:
+    transform 420ms cubic-bezier(.2, 1, .35, 1),
+    opacity   320ms ease-out,
+    visibility 0s linear 0s;
 }
 .outro-title {
   font-family: 'SharpGrotesk', var(--ctl-font);
@@ -758,22 +773,31 @@ body {
   background: rgba(0, 8, 60, 0.6);
   backdrop-filter: blur(10px) saturate(140%);
   -webkit-backdrop-filter: blur(10px) saturate(140%);
-  display: none;
+  /* Centered modal — the inner panel slides up from off-screen
+     below and lands at the middle of the screen. */
+  display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   z-index: 200;
   padding: 24px;
-  /* Fade-in for the backdrop itself. */
+  /* Hidden by default — visibility + pointer-events flip together
+     with opacity so the slide transition runs cleanly on show. */
+  visibility: hidden;
   opacity: 0;
-  transition: opacity 220ms ease-out;
+  pointer-events: none;
+  transition: opacity 280ms ease-out, visibility 0s linear 280ms;
 }
 .settings-backdrop.visible {
-  display: flex;
+  visibility: visible;
   opacity: 1;
+  pointer-events: auto;
+  transition: opacity 280ms ease-out, visibility 0s linear 0s;
 }
 /* No surrounding panel — buttons float directly on the blurred
-   backdrop as individual glass capsules. The container is just a
-   flex column for gap/alignment. */
+   backdrop as individual glass capsules. The container is centered
+   in the backdrop; on open it slides up from off-screen below
+   (translateY 120vh → 0) and lands at the middle of the screen. */
 .settings-modal {
   width: 100%;
   max-width: 320px;
@@ -783,9 +807,8 @@ body {
   background: transparent;
   border: 0;
   padding: 0;
-  /* Subtle pop-in keeps the feel of an opening menu. */
-  transform: translateY(10px);
-  transition: transform 240ms cubic-bezier(.2, 1, .35, 1);
+  transform: translateY(120vh);
+  transition: transform 420ms cubic-bezier(.2, 1, .35, 1);
 }
 .settings-backdrop.visible .settings-modal {
   transform: translateY(0);

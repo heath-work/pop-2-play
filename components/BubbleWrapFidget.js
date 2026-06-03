@@ -7,7 +7,7 @@ import * as THREE from 'three';
    badge sits in the top-right corner of the viewport so you can
    confirm at a glance that the iOS PWA cache has picked up the
    latest build. */
-const APP_VERSION = 'v27';
+const APP_VERSION = 'v29';
 
 /* ════════════════════════════════════════════════════════════════════
    3D LOTTO BALL TEXTURE — ported from the shakeit app.
@@ -411,6 +411,36 @@ export default function BubbleWrapFidget() {
         const gain = audioCtx.createGain();
         gain.gain.setValueAtTime(0.0001, now);
         gain.gain.exponentialRampToValueAtTime(0.5, now + 0.05);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+        src.connect(filter).connect(gain).connect(audioCtx.destination);
+        src.start(now);
+        src.stop(now + duration + 0.05);
+      } catch (_) {}
+    }
+    /* Same recipe as playSwoosh but shorter, quieter, and pitched a
+       touch lower — used when the settings / outro bottom sheets
+       slide up so the audio cue matches their gentler motion. */
+    function playSheetSwoosh() {
+      if (!audioEnabled || !audioCtx) return;
+      try {
+        const now = audioCtx.currentTime;
+        const duration = 0.32;
+        const sr = audioCtx.sampleRate;
+        const len = Math.max(1, Math.floor(sr * duration));
+        const buffer = audioCtx.createBuffer(1, len, sr);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+        const src = audioCtx.createBufferSource();
+        src.buffer = buffer;
+        const filter = audioCtx.createBiquadFilter();
+        filter.type = 'bandpass';
+        filter.Q.value = 1.6;
+        filter.frequency.setValueAtTime(140, now);
+        filter.frequency.exponentialRampToValueAtTime(900, now + 0.14);
+        filter.frequency.exponentialRampToValueAtTime(420, now + duration);
+        const gain = audioCtx.createGain();
+        gain.gain.setValueAtTime(0.0001, now);
+        gain.gain.exponentialRampToValueAtTime(0.22, now + 0.05);
         gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
         src.connect(filter).connect(gain).connect(audioCtx.destination);
         src.start(now);
@@ -1056,9 +1086,12 @@ export default function BubbleWrapFidget() {
 
     // Swap to the OTHER mesh bank so new pops drop into a fresh
     // set of meshes while the previous bank's balls finish their
-    // own drop animations. The ghost row populates immediately and
+    // own drop animations. The ghost row populates immediately;
     // the previous bank is hidden once its drops have had time to
-    // settle — no queueing, no waiting.
+    // settle. The game-count pill is intentionally refreshed AT
+    // that hide moment too — the "X/Y" label only ticks over once
+    // the previous row's balls have visibly disappeared, so the
+    // count stays in sync with what the user sees on screen.
     function advanceRow(completedRow) {
       if (!gameCompleting) return;
       gameCompleting = false;
@@ -1069,16 +1102,14 @@ export default function BubbleWrapFidget() {
       currentGame++;
       currentSelections = [];
       viewedGameIdx = currentGame;
-      refreshPill();
-      // After the previous bank's longest possible drop animation
-      // finishes (full SPIN_DURATION_MS + small buffer), hide its
-      // meshes so they don't sit forever in the slot positions.
+      // (deliberately no refreshPill() here — see comment above)
       const hideAfter = SPIN_DURATION_MS + 200;
       setTimeout(() => {
         for (let i = 0; i < NUMBERS_PER_GAME; i++) {
           const m = ballScene.meshes[prevGroupBase + i];
           if (m) m.visible = false;
         }
+        refreshPill();
       }, hideAfter);
     }
 
@@ -1191,6 +1222,7 @@ export default function BubbleWrapFidget() {
       if (!settingsBackdropEl) return;
       refreshSettingsLabels();
       settingsBackdropEl.classList.add('visible');
+      playSheetSwoosh();
     }
     function closeSettings() {
       settingsBackdropEl?.classList.remove('visible');
@@ -1407,6 +1439,7 @@ export default function BubbleWrapFidget() {
       if (!outroEl) return;
       outroEl.setAttribute('aria-hidden', 'false');
       outroEl.classList.add('outro-show');
+      playSheetSwoosh();
     }
     function hideOutro() {
       if (!outroEl) return;
