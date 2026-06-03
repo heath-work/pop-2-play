@@ -7,7 +7,7 @@ import * as THREE from 'three';
    badge sits in the top-right corner of the viewport so you can
    confirm at a glance that the iOS PWA cache has picked up the
    latest build. */
-const APP_VERSION = 'v24';
+const APP_VERSION = 'v25';
 
 /* ════════════════════════════════════════════════════════════════════
    3D LOTTO BALL TEXTURE — ported from the shakeit app.
@@ -631,15 +631,7 @@ export default function BubbleWrapFidget() {
         maybeRefillSheet();
       }, { once: true });
 
-      // Visual pop has fired regardless. Defer the SELECTION (slot
-       // assignment + ball drop) while a row is still settling so
-       // balls populate the next row in the order the user popped
-       // them, not on top of the still-landing previous row.
-      if (gameCompleting) {
-        pendingPops.push(num);
-      } else {
-        addSelected(num);
-      }
+      addSelected(num);
       return true;
     }
 
@@ -697,12 +689,6 @@ export default function BubbleWrapFidget() {
     let viewedGameIdx = 0;
     let totalGames = DEFAULT_GAMES;
     let gameCompleting = false;
-    // When a row's settle wait is in progress and the user pops more
-    // bubbles, the visual pop (animation / audio / burst) fires
-    // immediately, but the SELECTION (slot assignment + ball drop)
-    // is queued here. Processed in order after advanceRow runs, so
-    // balls populate the next row sequentially.
-    let pendingPops = [];
 
     function refreshPill() {
       if (ctaPillCountEl) {
@@ -733,9 +719,18 @@ export default function BubbleWrapFidget() {
       camera:   null,
       scene:    null,
       geometry: null,
-      meshes:   [],      // 7 pool meshes
-      slotCenters: [],   // [{x, y, r}, ...] in canvas pixel coords (top-left origin)
-      animations: [],    // active spin-in/-out anims
+      // Two banks of NUMBERS_PER_GAME meshes (16 total). activeGroupBase
+      // toggles between 0 and NUMBERS_PER_GAME each time a row
+      // completes — the new row uses the fresh bank while the
+      // previous bank's meshes keep their drop animations running
+      // until naturally hidden by the post-advance timeout. This
+      // lets new balls drop in front of still-settling previous
+      // balls instead of replacing or queueing them.
+      meshes:   [],
+      activeGroupBase: 0,
+      zCounter:        0,     // monotonically increasing — newer balls render in front
+      slotCenters: [],
+      animations: [],
       texCache:    new Map(),
       ballRadius:  22,
       width:  0,
@@ -776,11 +771,11 @@ export default function BubbleWrapFidget() {
       ballScene.scene = scene;
       ballScene.camera = camera;
       ballScene.geometry = geometry;
-      // Build a pool of 7 meshes (max balls visible in a single game).
-      // They're created once with MeshStandardMaterial so the same
-      // texture-swap path serves both first-render and re-render after
-      // game completion.
-      for (let i = 0; i < NUMBERS_PER_GAME; i++) {
+      // Build TWO banks of NUMBERS_PER_GAME meshes (16 total) so two
+      // consecutive rows can coexist briefly — previous row's balls
+      // finish their drop animation in one bank while the new row's
+      // pops spawn fresh meshes in the other bank.
+      for (let i = 0; i < NUMBERS_PER_GAME * 2; i++) {
         const mat = new THREE.MeshBasicMaterial({ map: null });
         const mesh = new THREE.Mesh(geometry, mat);
         mesh.visible = false;
@@ -847,7 +842,12 @@ export default function BubbleWrapFidget() {
         const anim = ballScene.animations[i];
         const t = Math.min(1, (now - anim.start) / anim.duration);
         const eased = easeOutCubic(t);
-        const mesh = ballScene.meshes[anim.slotIdx];
+        // anim.meshIdx is set by spawnBallInSlot (which bank +
+        // slot the animation is targeting); slotIdx is used for
+        // slot-centre lookup. Fall back to slotIdx for any
+        // legacy animations (e.g. slide-up-fade).
+        const mIdx = (anim.meshIdx != null) ? anim.meshIdx : anim.slotIdx;
+        const mesh = ballScene.meshes[mIdx];
         if (!mesh) {
           ballScene.animations.splice(i, 1);
           continue;
@@ -858,25 +858,16 @@ export default function BubbleWrapFidget() {
             ballScene.animations.splice(i, 1);
             continue;
           }
-          // Source = bubble centre (canvas-local px); target = slot
-          // centre. Y axis is gravity-accelerated (t²) for a physical
-          // fall; X uses easeOutCubic for a smooth lateral glide.
-          // Ball tumbles on X axis many times during the fall, easing
-          // into FINAL_ROT_X so the number lands forward-facing.
           const targetX = slot.x;
           const targetY = ballScene.height - slot.y;
           const startX  = anim.sourceX;
           const startY  = ballScene.height - anim.sourceY;
-          const yProg = t * t;             // accelerating fall
-          const xProg = eased;             // smooth lateral
+          const yProg = t * t;
+          const xProg = eased;
           mesh.position.x = startX + (targetX - startX) * xProg;
           mesh.position.y = startY + (targetY - startY) * yProg;
-          mesh.position.z = 0;
+          mesh.position.z = anim.zPos || 0;     // newer ball = higher z, renders in front
           mesh.scale.setScalar(ballScene.ballRadius);
-          // Tumble on all three axes by the per-ball random spin
-          // counts; each axis interpolates its accumulated revolutions
-          // toward 0 as the ball settles, so the final pose always
-          // lands on FINAL_ROT_X/Y/Z.
           const spinPhase = (1 - eased) * Math.PI * 2;
           mesh.rotation.set(
             FINAL_ROT_X + anim.spinX * spinPhase,
@@ -885,7 +876,7 @@ export default function BubbleWrapFidget() {
           );
           mesh.visible = true;
           if (t >= 1) {
-            mesh.position.set(targetX, targetY, 0);
+            mesh.position.set(targetX, targetY, anim.zPos || 0);
             mesh.rotation.set(FINAL_ROT_X, FINAL_ROT_Y, 0);
             ballScene.animations.splice(i, 1);
           }
@@ -924,30 +915,30 @@ export default function BubbleWrapFidget() {
 
     /* Public ball-scene API used by game flow */
     function spawnBallInSlot(slotIdx, number, sourceX, sourceY, duration) {
-      const mesh = ballScene.meshes[slotIdx];
+      // Pick the mesh from the active bank so a row-in-progress in
+      // the OTHER bank can finish its animations undisturbed.
+      const meshIdx = ballScene.activeGroupBase + slotIdx;
+      const mesh = ballScene.meshes[meshIdx];
       if (!mesh) return;
-      // The last ball in each row is the white "powerball" — same
-      // number on its face, but the ball itself is white with dark
-      // navy glyphs (classic lottery convention for the bonus pick).
       const white = slotIdx === NUMBERS_PER_GAME - 1;
       const tex = getBallTexture(number, white);
       if (mesh.material.map !== tex) {
         mesh.material.map = tex;
         mesh.material.needsUpdate = true;
       }
-      // Track number + whiteness on the mesh so the font-load rebake
-      // can refresh visible balls once SharpGrotesk loads.
       mesh.userData.number = number;
       mesh.userData.white = white;
       mesh.material.opacity = 1;
       mesh.material.transparent = false;
       mesh.visible = true;
-      // Fallback: if we have no source position (e.g. autopop debug or
-      // missing bubble), start at the slot's own X just above the slot,
-      // so the animation still plays sanely without referring to a
-      // bubble's screen position.
       const slot = ballScene.slotCenters[slotIdx];
       const fallbackY = slot ? Math.max(0, slot.y - ballScene.ballRadius * 4) : 0;
+      // Bump zCounter so newer balls always have higher z (closer to
+      // camera). The depth test then naturally renders the newer
+      // ball in front of any still-settling previous ball at the
+      // same slot position.
+      ballScene.zCounter += 0.05;
+      const zPos = ballScene.zCounter;
       // Per-ball random spin axes — each ball tumbles on all three
        // axes with a random number of revolutions and direction. The
        // rotation interpolates these spins from their initial value
@@ -961,6 +952,8 @@ export default function BubbleWrapFidget() {
       ballScene.animations.push({
         kind: 'drop-in',
         slotIdx,
+        meshIdx,
+        zPos,
         number,
         sourceX: Number.isFinite(sourceX) ? sourceX : (slot ? slot.x : 0),
         sourceY: Number.isFinite(sourceY) ? sourceY : fallbackY,
@@ -1049,25 +1042,32 @@ export default function BubbleWrapFidget() {
       });
     }
 
-    // Clears the active balls, paints the ghost row, bumps the game
-    // counter, then drains any pops the user queued during the
-    // settle wait. Pops are spaced 110 ms apart so the next row
-    // visibly populates ball-by-ball instead of all-at-once.
+    // Swap to the OTHER mesh bank so new pops drop into a fresh
+    // set of meshes while the previous bank's balls finish their
+    // own drop animations. The ghost row populates immediately and
+    // the previous bank is hidden once its drops have had time to
+    // settle — no queueing, no waiting.
     function advanceRow(completedRow) {
       if (!gameCompleting) return;
       gameCompleting = false;
-      clearAllBalls(false);
+      const prevGroupBase = ballScene.activeGroupBase;
+      ballScene.activeGroupBase =
+        prevGroupBase === 0 ? NUMBERS_PER_GAME : 0;
       populateGhostRow(completedRow);
       currentGame++;
       currentSelections = [];
       viewedGameIdx = currentGame;
       refreshPill();
-
-      if (pendingPops.length) {
-        const queue = pendingPops;
-        pendingPops = [];
-        queue.forEach((n, i) => setTimeout(() => addSelected(n), i * 110));
-      }
+      // After the previous bank's longest possible drop animation
+      // finishes (full SPIN_DURATION_MS + small buffer), hide its
+      // meshes so they don't sit forever in the slot positions.
+      const hideAfter = SPIN_DURATION_MS + 200;
+      setTimeout(() => {
+        for (let i = 0; i < NUMBERS_PER_GAME; i++) {
+          const m = ballScene.meshes[prevGroupBase + i];
+          if (m) m.visible = false;
+        }
+      }, hideAfter);
     }
 
     function addSelected(num) {
@@ -1104,22 +1104,20 @@ export default function BubbleWrapFidget() {
         allGames[currentGame] = completedRow;
         playRowComplete();
         triggerGameCompleteCelebration();
-        // Schedule the row-advance for after the last ball's drop
-        // animation. If the user pops again before this fires,
-        // addSelected (above) calls advanceRow eagerly and this
-        // becomes a no-op via the gameCompleting guard.
-        const fast = autoPlayQueue > 0;
-        const settleWait  = (fast ? SPIN_DURATION_MS / 2 : SPIN_DURATION_MS) + 80;
-        const nextRowWait = fast ? 180 : 360;
-        setTimeout(() => {
-          advanceRow(completedRow);
-          if (autoPlayQueue > 0) {
-            autoPlayQueue--;
-            if (autoPlayQueue > 0 || currentGame < totalGames) {
-              setTimeout(autoFillCurrentRow, nextRowWait);
-            }
+        // Advance immediately — no settle delay. The mesh-bank swap
+        // inside advanceRow lets the just-popped 8th ball finish
+        // its drop in the OLD bank while any subsequent pop drops
+        // a brand-new ball into the NEW bank.
+        advanceRow(completedRow);
+        // Fast-select cascade still spaces its automated pops.
+        if (autoPlayQueue > 0) {
+          autoPlayQueue--;
+          if (autoPlayQueue > 0 || currentGame < totalGames) {
+            const fast = autoPlayQueue > 0;
+            const nextRowWait = fast ? 180 : 360;
+            setTimeout(autoFillCurrentRow, nextRowWait);
           }
-        }, settleWait);
+        }
         refreshPill();
         return;
       }
@@ -1133,13 +1131,15 @@ export default function BubbleWrapFidget() {
     function resetAll() {
       autoPlayQueue = 0;
       gameCompleting = false;
-      pendingPops = [];
       currentGame = 0;
       currentSelections = [];
       viewedGameIdx = 0;
       allGames.length = 0;
-      // Hide WebGL balls instantly.
+      // Hide WebGL balls instantly (clearAllBalls iterates all 16
+      // meshes across both banks). Reset bank pointer + z counter.
       clearAllBalls(false);
+      ballScene.activeGroupBase = 0;
+      ballScene.zCounter = 0;
       // Drop persistent ghost rows.
       if (ghostRowEl) ghostRowEl.innerHTML = '';
       // Refill the sheet with the existing animation hook.
