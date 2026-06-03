@@ -810,24 +810,77 @@ body {
   pointer-events: auto;
   transition: opacity 280ms ease-out, visibility 0s linear 0s;
 }
-/* No surrounding panel — buttons float directly on the blurred
-   backdrop as individual glass capsules. The container is centered
-   in the backdrop; on open it slides up from off-screen below
-   (translateY 120vh → 0) and lands at the middle of the screen. */
-.settings-modal {
+/* The card is the slide-up unit (carries the translateY animation)
+   and holds the horizontal slider of panels. */
+.settings-card {
+  position: relative;
   width: 100%;
   max-width: 320px;
+  transform: translateY(120vh);
+  transition: transform 420ms cubic-bezier(.2, 1, .35, 1);
+}
+.settings-backdrop.visible .settings-card {
+  transform: translateY(0);
+}
+/* Persistent close (X) pinned to the viewport's top-right, NOT to
+   the card. Sits 16 px from top + right so it doesn't move when
+   the inner panel slide-up animates. Sibling of .settings-card
+   inside the backdrop. */
+.settings-close {
+  position: fixed;
+  top: calc(16px + env(safe-area-inset-top, 0px));
+  right: 16px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  transition: background 180ms ease, transform 120ms ease;
+}
+.settings-close:hover  { background: rgba(255, 255, 255, 0.12); }
+.settings-close:active { transform: translateY(1px); }
+.settings-close svg { width: 18px; height: 18px; display: block; }
+
+/* Slider — clips the 200%-wide track HORIZONTALLY only so the
+   off-screen panel doesn't leak in, while letting vertical
+   overflow (the bubble's drop-shadow glow) escape uncropped.
+   `overflow: clip` lets us mix the two axes, which `overflow:
+   hidden` can't. Supported in iOS Safari 16+ / all modern Chromium. */
+.settings-slider {
+  width: 100%;
+  overflow-x: clip;
+  overflow-y: visible;
+}
+.settings-slider-track {
+  display: flex;
+  width: 200%;
+  transform: translateX(0);
+  transition: transform 380ms cubic-bezier(.2, 1, .35, 1);
+}
+.settings-backdrop.is-howto .settings-slider-track {
+  transform: translateX(-50%);
+}
+.settings-modal,
+.settings-howto {
+  width: 50%;
+  flex-shrink: 0;
+}
+
+.settings-modal {
   display: flex;
   flex-direction: column;
   gap: 10px;
   background: transparent;
   border: 0;
   padding: 0;
-  transform: translateY(120vh);
-  transition: transform 420ms cubic-bezier(.2, 1, .35, 1);
-}
-.settings-backdrop.visible .settings-modal {
-  transform: translateY(0);
 }
 /* Matches the bottom-bar "Fast select" pill — translucent lavender
    fill, 1 px lavender border, 8 px backdrop blur, faint top inset
@@ -865,6 +918,26 @@ body {
 .settings-toggle.is-off .settings-toggle-state {
   color: rgba(255, 255, 255, 0.45);
 }
+/* Primary highlight — Jump to ticket. Pink-purple tint + leading
+   lightning icon, signalling the most action-y row of the menu. */
+.settings-btn-primary {
+  background: rgba(220, 140, 220, 0.32);
+  border-color: rgba(245, 180, 240, 0.40);
+}
+.settings-btn-primary:hover { background: rgba(220, 140, 220, 0.40); }
+.settings-btn-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+/* Secondary highlight — Fresh sheet. Cooler blue-lilac tint so it
+   reads as the "alt" featured action between Jump and Start over. */
+.settings-btn-secondary {
+  background: rgba(140, 160, 240, 0.32);
+  border-color: rgba(180, 200, 255, 0.38);
+}
+.settings-btn-secondary:hover { background: rgba(140, 160, 240, 0.40); }
+
 /* Exit keeps the destructive red tint but the same glass treatment. */
 .settings-btn-exit {
   background: rgba(255, 90, 120, 0.22);
@@ -873,6 +946,118 @@ body {
   box-shadow: inset 0 1px 0 rgba(255, 210, 220, 0.18);
 }
 .settings-btn-exit:hover { background: rgba(255, 90, 120, 0.30); }
+
+/* ── How to Play panel — slides in from the right when the menu's
+   "How to play" button is tapped. Pulled up 64 px so the bubble +
+   title sit higher in the viewport. */
+.settings-howto {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 0 8px;
+  margin-top: -64px;
+}
+/* Hero wraps the bubble PNG and the spinning-ball canvas in the
+   same 84px box so the loop animation can swap which one is
+   visible without anything shifting on the page. Both children
+   sit inset:0 inside this relative container. */
+.settings-howto-hero {
+  position: relative;
+  width: 84px;
+  height: 84px;
+  margin-bottom: 18px;
+  /* burst particles are appended in here as position:absolute and
+     fly outward, so we must let them overflow. */
+  overflow: visible;
+}
+.settings-howto-bubble {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  mix-blend-mode: screen;
+  filter: drop-shadow(0 0 18px rgba(255, 255, 255, 0.55));
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-user-drag: none;
+  /* Driven by JS during the loop: scale-pop, then fade out for
+     the ball reveal, then fade back in for the next cycle. */
+  transition: opacity 220ms ease;
+}
+.settings-howto-bubble.is-faded {
+  opacity: 0;
+}
+.settings-howto-bubble.howto-popping {
+  animation: howtoPop 320ms cubic-bezier(.34,1.56,.64,1) forwards;
+}
+@keyframes howtoPop {
+  0%   { transform: scale(1);    }
+  45%  { transform: scale(1.18); }
+  100% { transform: scale(1.32); opacity: 0; }
+}
+.settings-howto-ball-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  /* Slight scale-up on reveal so the ball "blooms" out of the
+     pop instead of just snapping in. */
+  transform: scale(0.7);
+  transition: opacity 220ms ease, transform 280ms cubic-bezier(.34,1.56,.64,1);
+  pointer-events: none;
+}
+.settings-howto-ball-canvas.is-visible {
+  opacity: 1;
+  transform: scale(1);
+}
+.settings-howto-title {
+  font-family: 'SharpGrotesk', var(--ctl-font);
+  font-size: 26px;
+  font-weight: 500;
+  color: #fff;
+  margin: 0 0 18px;
+  letter-spacing: -0.005em;
+  text-rendering: geometricPrecision;
+}
+.settings-howto-body {
+  font-family: 'SharpGrotesk', var(--ctl-font);
+  font-size: 15px;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.92);
+  line-height: 1.4;
+  margin: 0 0 14px;
+  max-width: 280px;
+  text-rendering: geometricPrecision;
+}
+.settings-howto-body-accent {
+  color: rgba(200, 180, 255, 0.85);
+  margin-top: 8px;
+}
+/* Same dimensions as the menu's .settings-btn (10/8 vertical
+   padding, 22 horizontal, no fixed height or min-width) so the
+   Back to Popping pill matches the menu rows visually. Slightly
+   more saturated lavender + the standard glass treatment. */
+.settings-howto-cta {
+  margin-top: 26px;
+  border-radius: 999px;
+  background: rgba(180, 160, 240, 0.34);
+  border: 1px solid rgba(200, 180, 255, 0.40);
+  color: #fff;
+  font-family: 'SharpGrotesk', var(--ctl-font);
+  font-size: 17px;
+  font-weight: 400;
+  cursor: pointer;
+  padding: 10px 22px 8px;
+  text-rendering: geometricPrecision;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  transition: background 180ms ease, transform 120ms ease;
+}
+.settings-howto-cta:hover  { background: rgba(180, 160, 240, 0.42); }
+.settings-howto-cta:active { transform: translateY(1px); }
 
 /* Legacy modal kept hidden so any leftover JS that touches its
    selectors doesn't blow up. */

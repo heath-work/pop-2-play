@@ -7,7 +7,7 @@ import * as THREE from 'three';
    badge sits in the top-right corner of the viewport so you can
    confirm at a glance that the iOS PWA cache has picked up the
    latest build. */
-const APP_VERSION = 'v35';
+const APP_VERSION = 'v40';
 
 /* ════════════════════════════════════════════════════════════════════
    3D LOTTO BALL TEXTURE — ported from the shakeit app.
@@ -602,7 +602,7 @@ export default function BubbleWrapFidget() {
     // Each particle uses bubble-static.png with mix-blend-mode: screen
     // so it reads as a glassy droplet against the dark backdrop, then
     // fades out as it travels (CSS keyframes drive the movement).
-    function spawnBurst(cx, cy, size) {
+    function spawnBurst(cx, cy, size, container = bubblesEl) {
       const PARTICLE_COUNT = 10;
       for (let i = 0; i < PARTICLE_COUNT; i++) {
         // Spread evenly around the circle then jitter so particles
@@ -625,7 +625,7 @@ export default function BubbleWrapFidget() {
         // mechanical explosion.
         el.style.animationDelay    = (Math.random() * 40) + 'ms';
         el.style.animationDuration = (520 + Math.random() * 180) + 'ms';
-        bubblesEl.appendChild(el);
+        container.appendChild(el);
         el.addEventListener('animationend', () => el.remove(), { once: true });
       }
     }
@@ -1219,12 +1219,14 @@ export default function BubbleWrapFidget() {
     // The bottom-bar … button now opens the Settings modal instead of
     // resetting directly. Reset moved to a button inside the modal.
     const settingsBackdropEl     = document.getElementById('settingsBackdrop');
+    const settingsCloseEl        = document.getElementById('settingsClose');
     const settingsAudioEl        = document.getElementById('settingsAudio');
     const settingsResetEl        = document.getElementById('settingsReset');
     const settingsFreshSheetEl   = document.getElementById('settingsFreshSheet');
     const settingsJumpTicketEl   = document.getElementById('settingsJumpToTicket');
     const settingsExitEl         = document.getElementById('settingsExit');
     const settingsHowToEl        = document.getElementById('settingsHowToPlay');
+    const settingsHowtoBackEl    = document.getElementById('settingsHowtoBack');
     function refreshSettingsLabels() {
       if (settingsAudioEl) {
         settingsAudioEl.classList.toggle('is-off', !audioEnabled);
@@ -1239,9 +1241,23 @@ export default function BubbleWrapFidget() {
       playSheetSwoosh();
     }
     function closeSettings() {
-      settingsBackdropEl?.classList.remove('visible');
+      if (!settingsBackdropEl) return;
+      settingsBackdropEl.classList.remove('visible');
+      // Reset sub-panel so the next open shows the menu (not the
+      // How to Play screen the user was last on).
+      settingsBackdropEl.classList.remove('is-howto');
+      // Kill the how-to demo loop + reset its visuals so a future
+      // re-entry starts from a clean bubble-visible state.
+      stopHowtoLoop();
     }
     if (ctaExitEl) ctaExitEl.addEventListener('click', openSettings, { signal });
+    if (settingsCloseEl) settingsCloseEl.addEventListener('click', closeSettings, { signal });
+    if (settingsHowtoBackEl) settingsHowtoBackEl.addEventListener('click', () => {
+      // "Back to Popping" dismisses the whole settings modal so the
+      // user lands back on the bubble grid (closeSettings also strips
+      // .is-howto so reopening starts on the menu again).
+      closeSettings();
+    }, { signal });
     if (settingsBackdropEl) settingsBackdropEl.addEventListener('click', (e) => {
       // Click on the backdrop (outside the modal panel) closes.
       if (e.target === settingsBackdropEl) closeSettings();
@@ -1269,8 +1285,12 @@ export default function BubbleWrapFidget() {
       refreshSettingsLabels();
     }, { signal });
     if (settingsHowToEl) settingsHowToEl.addEventListener('click', () => {
-      // Placeholder — How-to-play panel TBD.
-      closeSettings();
+      // Slide the How to Play panel in from the right; menu slides
+      // off to the left. Stay open; Back to Popping or the X close
+      // the dialog.
+      settingsBackdropEl?.classList.add('is-howto');
+      // Kick off the bubble → ball reveal demo loop.
+      startHowtoLoop();
     }, { signal });
     if (settingsExitEl) settingsExitEl.addEventListener('click', () => {
       // Exit Game = reset progress + bring the intro screen back.
@@ -1709,6 +1729,187 @@ export default function BubbleWrapFidget() {
       };
     })();
 
+    /* How-to-play hero — a small Three.js ball that sits in the same
+       84×84 box as the .settings-howto-bubble PNG. Hidden by default;
+       the loop driver below fades the bubble out, fades this canvas
+       in, lets it spin for 3 s, then fades it back out for the next
+       cycle. Steady Y-axis spin only — no drag, no shuffle. */
+    let disposeHowtoBall = null;
+    let startHowtoBallSpin = null;
+    let stopHowtoBallSpin  = null;
+    (function initHowtoBall() {
+      const cvs = document.getElementById('settingsHowtoBallCanvas');
+      if (!cvs) return;
+      const renderer = new THREE.WebGLRenderer({
+        canvas: cvs, antialias: true, alpha: true,
+      });
+      renderer.setClearColor(0x000000, 0);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      const scene  = new THREE.Scene();
+      const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 2000);
+      // Camera well outside the sphere so back-face culling never
+      // eats the front (same trick as the intro hero).
+      camera.position.z = 800;
+      const geometry = new THREE.SphereGeometry(1, 64, 64);
+      // Purple number "5" — matches the design reference for the
+      // How to Play sequence. noGradient: true keeps it flat.
+      const tex = makeBallTexture(5, false, {
+        fill: '#9951DB',
+        textColor: '#ffffff',
+        discPositions: ANTIPRISM_DISC_POSITIONS,
+        angularR: 0.40,
+        noGradient: true,
+      });
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const mat  = new THREE.MeshBasicMaterial({ map: tex });
+      const mesh = new THREE.Mesh(geometry, mat);
+      mesh.rotation.set(0, 0, 0);
+      scene.add(mesh);
+      function sizeTo() {
+        const r = cvs.getBoundingClientRect();
+        const w = Math.max(1, Math.round(r.width));
+        const h = Math.max(1, Math.round(r.height));
+        renderer.setSize(w, h, false);
+        camera.left = -w / 2; camera.right = w / 2;
+        camera.top  =  h / 2; camera.bottom = -h / 2;
+        camera.updateProjectionMatrix();
+        // Sized to roughly match the visible bubble PNG's core so
+        // the reveal reads as the bubble TURNING INTO the ball, not
+        // a shrunken ball appearing inside the bubble's footprint.
+        mesh.scale.setScalar(Math.min(w, h) * 0.44);
+      }
+      sizeTo();
+      const ro = (typeof ResizeObserver !== 'undefined')
+        ? new ResizeObserver(sizeTo) : null;
+      if (ro) ro.observe(cvs);
+      let raf = null;
+      let stopped = false;
+      function tick() {
+        if (stopped) { raf = null; return; }
+        raf = requestAnimationFrame(tick);
+        mesh.rotation.y += 0.045;          // steady spin
+        renderer.render(scene, camera);
+      }
+      startHowtoBallSpin = () => {
+        if (!raf && !stopped) {
+          // Re-measure on each reveal — the modal/panel may have
+          // mounted with 0 size if the user opens settings for the
+          // first time, and we want crisp pixels on the canvas.
+          sizeTo();
+          raf = requestAnimationFrame(tick);
+        }
+      };
+      stopHowtoBallSpin = () => {
+        if (raf) { cancelAnimationFrame(raf); raf = null; }
+      };
+      // Render one frame so the texture is on the canvas immediately
+      // (otherwise the first reveal would briefly show a blank canvas
+      // before the rAF tick lands a frame).
+      renderer.render(scene, camera);
+      disposeHowtoBall = () => {
+        stopped = true;
+        if (raf) { cancelAnimationFrame(raf); raf = null; }
+        ro?.disconnect();
+        geometry.dispose();
+        tex.dispose();
+        mat.dispose();
+        renderer.dispose();
+      };
+    })();
+
+    /* How-to-play loop driver — sequence is:
+        [0]    bubble visible
+        [2.0s] bubble pop (CSS scale + spawnBurst), 320 ms
+        [2.3s] bubble fades, ball fades in + spins
+        [5.3s] ball fades out, bubble fades back in
+        [5.5s] back to [0]
+       The loop runs only while the settings backdrop is visible
+       AND the is-howto class is on it; either condition becoming
+       false cancels the in-flight timeout and resets the visuals
+       so re-opening the How-to-play panel starts cleanly. */
+    let howtoTimers = [];
+    let howtoLoopActive = false;
+    function clearHowtoTimers() {
+      for (const t of howtoTimers) clearTimeout(t);
+      howtoTimers = [];
+    }
+    function isHowtoVisible() {
+      return !!(settingsBackdropEl
+        && settingsBackdropEl.classList.contains('visible')
+        && settingsBackdropEl.classList.contains('is-howto'));
+    }
+    function resetHowtoVisuals() {
+      const hero   = document.getElementById('settingsHowtoHero');
+      const bubble = document.querySelector('.settings-howto-bubble');
+      const ball   = document.getElementById('settingsHowtoBallCanvas');
+      if (bubble) bubble.classList.remove('is-faded', 'howto-popping');
+      if (ball)   ball.classList.remove('is-visible');
+      // Clear any in-flight burst particles so re-opening the panel
+      // doesn't show leftovers from the prior cycle.
+      if (hero) {
+        const stragglers = hero.querySelectorAll('.burst-particle');
+        stragglers.forEach(el => el.remove());
+      }
+      if (stopHowtoBallSpin) stopHowtoBallSpin();
+    }
+    function runHowtoSequence() {
+      if (!howtoLoopActive || !isHowtoVisible()) return;
+      const hero   = document.getElementById('settingsHowtoHero');
+      const bubble = document.querySelector('.settings-howto-bubble');
+      const ball   = document.getElementById('settingsHowtoBallCanvas');
+      if (!hero || !bubble || !ball) return;
+
+      // Phase 1: pop the bubble + spray burst particles AND reveal
+      // the spinning ball in the same frame so the ball blooms out
+      // through the bursting bubble (rather than appearing after
+      // the particles have already faded). The bubble's scale/fade
+      // animation (320 ms) and the ball's CSS scale-in (280 ms)
+      // overlap with the ~600 ms burst-particle spray.
+      bubble.classList.add('howto-popping');
+      const r = hero.getBoundingClientRect();
+      spawnBurst(r.width / 2, r.height / 2, r.width, hero);
+      ball.classList.add('is-visible');
+      if (startHowtoBallSpin) startHowtoBallSpin();
+
+      // Phase 2: lock the bubble at opacity 0 right as its pop
+      // animation ends. We add .is-faded BEFORE removing the
+      // animation class so the bubble is held hidden by one class
+      // or the other at every frame — no flicker.
+      howtoTimers.push(setTimeout(() => {
+        if (!howtoLoopActive || !isHowtoVisible()) return;
+        bubble.classList.add('is-faded');
+        bubble.classList.remove('howto-popping');
+      }, 320));
+
+      // Phase 3: after the ball has spun for ~3 s (measured from
+      // its reveal at phase 1), hide it and bring the bubble back.
+      howtoTimers.push(setTimeout(() => {
+        if (!howtoLoopActive || !isHowtoVisible()) return;
+        ball.classList.remove('is-visible');
+        bubble.classList.remove('is-faded');
+        // Stop the rAF slightly after the fade so the user doesn't
+        // catch a snap-stop mid-spin.
+        howtoTimers.push(setTimeout(() => {
+          if (stopHowtoBallSpin) stopHowtoBallSpin();
+        }, 260));
+        // Phase 4: wait, then loop.
+        howtoTimers.push(setTimeout(runHowtoSequence, 1600));
+      }, 3000));
+    }
+    function startHowtoLoop() {
+      if (howtoLoopActive) return;
+      howtoLoopActive = true;
+      resetHowtoVisuals();
+      // First pop lands 2 s after the panel slides in — gives the
+      // user a beat to read the title before the demo kicks off.
+      howtoTimers.push(setTimeout(runHowtoSequence, 2000));
+    }
+    function stopHowtoLoop() {
+      howtoLoopActive = false;
+      clearHowtoTimers();
+      resetHowtoVisuals();
+    }
+
     function refreshIntroToggles() {
       if (introAudioEl) introAudioEl.setAttribute('aria-pressed', audioEnabled ? 'true' : 'false');
       if (introTiltEl)  introTiltEl.setAttribute('aria-pressed',  tiltEnabled  ? 'true' : 'false');
@@ -1812,6 +2013,8 @@ export default function BubbleWrapFidget() {
     return () => {
       ac.abort();
       if (disposeIntroBall) { disposeIntroBall(); disposeIntroBall = null; }
+      if (disposeHowtoBall) { disposeHowtoBall(); disposeHowtoBall = null; }
+      stopHowtoLoop();
       if (ro) ro.disconnect();
       if (bubblesEl) bubblesEl.innerHTML = '';
       if (_hapticSwitch && _hapticSwitch.label.parentNode) {
@@ -2079,26 +2282,111 @@ export default function BubbleWrapFidget() {
           panel over a dark-blue blurred overlay; clicking the
           backdrop or any action closes it. */}
       <div className="settings-backdrop" id="settingsBackdrop" aria-hidden="true">
-        <div className="settings-modal" role="dialog" aria-label="Settings">
-          <button className="settings-btn" id="settingsJumpToTicket" type="button">
-            Jump to ticket
-          </button>
-          <button className="settings-btn" id="settingsReset" type="button">
-            Start over
-          </button>
-          <button className="settings-btn" id="settingsFreshSheet" type="button">
-            Fresh sheet
-          </button>
-          <button className="settings-btn settings-toggle" id="settingsAudio" type="button">
-            <span>Audio</span>
-            <span className="settings-toggle-state">On</span>
-          </button>
-          <button className="settings-btn" id="settingsHowToPlay" type="button">
-            How to play
-          </button>
-          <button className="settings-btn settings-btn-exit" id="settingsExit" type="button">
-            Exit Game
-          </button>
+        {/* Persistent X — pinned to the viewport's top-right (not the
+            card) so it sits at a fixed 16/16 inset regardless of
+            which sub-panel is showing. */}
+        <button
+          className="settings-close"
+          id="settingsClose"
+          type="button"
+          aria-label="Close menu"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M6 6l12 12M18 6l-12 12"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+            />
+          </svg>
+        </button>
+
+        <div className="settings-card">
+          {/* Horizontal slider: track is 200% wide and contains the
+              menu (left half) + the How to Play panel (right half).
+              .is-howto on the backdrop translates the track -50% so
+              the menu slides off-screen left and How to Play slides
+              in from the right. */}
+          <div className="settings-slider">
+            <div className="settings-slider-track">
+              <div className="settings-modal" role="dialog" aria-label="Settings">
+                <button
+                  className="settings-btn settings-btn-primary"
+                  id="settingsJumpToTicket"
+                  type="button"
+                >
+                  <svg className="settings-btn-icon" viewBox="0 0 18 18" aria-hidden="true">
+                    <polygon points="10,1 3,10 8,10 7,17 15,7 10,7" fill="currentColor" />
+                  </svg>
+                  <span>Jump to ticket</span>
+                </button>
+                <button
+                  className="settings-btn settings-btn-secondary"
+                  id="settingsFreshSheet"
+                  type="button"
+                >
+                  Fresh sheet
+                </button>
+                <button className="settings-btn" id="settingsReset" type="button">
+                  Start over
+                </button>
+                <button className="settings-btn settings-toggle" id="settingsAudio" type="button">
+                  <span>Audio</span>
+                  <span className="settings-toggle-state">On</span>
+                </button>
+                <button className="settings-btn" id="settingsHowToPlay" type="button">
+                  How to play
+                </button>
+                <button
+                  className="settings-btn settings-btn-exit"
+                  id="settingsExit"
+                  type="button"
+                >
+                  Exit
+                </button>
+              </div>
+
+              <div className="settings-howto" role="dialog" aria-label="How to play">
+                {/* Hero — bubble + lotto ball stacked in the same
+                    84px box. JS swaps which is visible during the
+                    pop → spin → reset loop. */}
+                <div className="settings-howto-hero" id="settingsHowtoHero">
+                  <img
+                    className="settings-howto-bubble"
+                    src="/intro-bubble.png"
+                    alt=""
+                    draggable="false"
+                  />
+                  <canvas
+                    className="settings-howto-ball-canvas"
+                    id="settingsHowtoBallCanvas"
+                    aria-hidden="true"
+                  />
+                </div>
+                <h2 className="settings-howto-title">Pop. Drop. Play.</h2>
+                <p className="settings-howto-body">
+                  Tap or swipe the bubbles to reveal your lucky numbers.
+                </p>
+                <p className="settings-howto-body">
+                  Each pop adds a ball to your game row.
+                </p>
+                <p className="settings-howto-body">
+                  Fill the rows, enjoy the PlaySMR, then we&rsquo;ll turn it
+                  into your ticket.
+                </p>
+                <p className="settings-howto-body settings-howto-body-accent">
+                  No strategy required. Just chaos with numbers.
+                </p>
+                <button
+                  className="settings-howto-cta"
+                  id="settingsHowtoBack"
+                  type="button"
+                >
+                  Back to Popping
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </>
