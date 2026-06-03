@@ -7,7 +7,7 @@ import * as THREE from 'three';
    badge sits in the top-right corner of the viewport so you can
    confirm at a glance that the iOS PWA cache has picked up the
    latest build. */
-const APP_VERSION = 'v31';
+const APP_VERSION = 'v35';
 
 /* ════════════════════════════════════════════════════════════════════
    3D LOTTO BALL TEXTURE — ported from the shakeit app.
@@ -1092,32 +1092,28 @@ export default function BubbleWrapFidget() {
 
     // Swap to the OTHER mesh bank so new pops drop into a fresh
     // set of meshes while the previous bank's balls finish their
-    // own drop animations. The ghost row populates immediately;
-    // the previous bank is hidden once its drops have had time to
-    // settle. The game-count pill is intentionally refreshed AT
-    // that hide moment too — the "X/Y" label only ticks over once
-    // the previous row's balls have visibly disappeared, so the
-    // count stays in sync with what the user sees on screen.
+    // own drop animations. Once the previous bank's drops have had
+    // time to settle, fire the visible handoff all together:
+    // hide the previous bank, populate the ghost row, and tick the
+    // count over. Doing all three at the same moment keeps the
+    // user's perception in sync — balls disappear, ghosts appear,
+    // the X/Y label moves on, all on one frame.
     function advanceRow(completedRow) {
       if (!gameCompleting) return;
       gameCompleting = false;
       const prevGroupBase = ballScene.activeGroupBase;
       ballScene.activeGroupBase =
         prevGroupBase === 0 ? NUMBERS_PER_GAME : 0;
-      populateGhostRow(completedRow);
       currentGame++;
       currentSelections = [];
       viewedGameIdx = currentGame;
-      // (deliberately no refreshPill() here — see comment above)
       const hideAfter = SPIN_DURATION_MS + 200;
       setTimeout(() => {
         for (let i = 0; i < NUMBERS_PER_GAME; i++) {
           const m = ballScene.meshes[prevGroupBase + i];
           if (m) m.visible = false;
         }
-        // Now (and only now) catch the displayed count up to the
-        // real game index so the pill ticks over in sync with the
-        // balls disappearing.
+        populateGhostRow(completedRow);
         displayedGameIdx = viewedGameIdx;
         refreshPill();
       }, hideAfter);
@@ -1168,13 +1164,21 @@ export default function BubbleWrapFidget() {
         // last drop animation to land.
         if (currentGame >= totalGames) {
           autoPlayQueue = 0;
+          setFastSelectActive(false);
           setTimeout(showOutro, SPIN_DURATION_MS + 200);
         } else if (autoPlayQueue > 0) {
           autoPlayQueue--;
           if (autoPlayQueue > 0 || currentGame < totalGames) {
             const fast = autoPlayQueue > 0;
             const nextRowWait = fast ? 180 : 360;
-            setTimeout(autoFillCurrentRow, nextRowWait);
+            const myGen = autoFillCancelGen;
+            setTimeout(() => {
+              if (autoFillCancelGen !== myGen) return;
+              autoFillCurrentRow();
+            }, nextRowWait);
+          } else {
+            // Cascade ran out — flip the button back.
+            setFastSelectActive(false);
           }
         }
         // No refreshPill() here — advanceRow's deferred timeout
@@ -1191,6 +1195,8 @@ export default function BubbleWrapFidget() {
     // Settings modal's Reset button.
     function resetAll() {
       autoPlayQueue = 0;
+      autoFillCancelGen++;       // invalidate any in-flight cascade
+      setFastSelectActive(false);
       gameCompleting = false;
       hideOutro();
       currentGame = 0;
@@ -1212,23 +1218,18 @@ export default function BubbleWrapFidget() {
 
     // The bottom-bar … button now opens the Settings modal instead of
     // resetting directly. Reset moved to a button inside the modal.
-    const settingsBackdropEl = document.getElementById('settingsBackdrop');
-    const settingsAudioEl    = document.getElementById('settingsAudio');
-    const settingsTiltEl     = document.getElementById('settingsTilt');
-    const settingsResetEl    = document.getElementById('settingsReset');
-    const settingsSkipEl     = document.getElementById('settingsSkip');
-    const settingsExitEl     = document.getElementById('settingsExit');
-    const settingsHowToEl    = document.getElementById('settingsHowToPlay');
+    const settingsBackdropEl     = document.getElementById('settingsBackdrop');
+    const settingsAudioEl        = document.getElementById('settingsAudio');
+    const settingsResetEl        = document.getElementById('settingsReset');
+    const settingsFreshSheetEl   = document.getElementById('settingsFreshSheet');
+    const settingsJumpTicketEl   = document.getElementById('settingsJumpToTicket');
+    const settingsExitEl         = document.getElementById('settingsExit');
+    const settingsHowToEl        = document.getElementById('settingsHowToPlay');
     function refreshSettingsLabels() {
       if (settingsAudioEl) {
         settingsAudioEl.classList.toggle('is-off', !audioEnabled);
         const s = settingsAudioEl.querySelector('.settings-toggle-state');
         if (s) s.textContent = audioEnabled ? 'On' : 'Off';
-      }
-      if (settingsTiltEl) {
-        settingsTiltEl.classList.toggle('is-off', !tiltEnabled);
-        const s = settingsTiltEl.querySelector('.settings-toggle-state');
-        if (s) s.textContent = tiltEnabled ? 'On' : 'Off';
       }
     }
     function openSettings() {
@@ -1245,25 +1246,30 @@ export default function BubbleWrapFidget() {
       // Click on the backdrop (outside the modal panel) closes.
       if (e.target === settingsBackdropEl) closeSettings();
     }, { signal });
+    // Jump to ticket — fade in the outro overlay (for now). Hook the
+    // real ticket view here when it's built.
+    if (settingsJumpTicketEl) settingsJumpTicketEl.addEventListener('click', () => {
+      closeSettings();
+      showOutro();
+    }, { signal });
+    // Start over — wipe game state + fresh sheet animation.
     if (settingsResetEl) settingsResetEl.addEventListener('click', () => {
       resetAll();
+      closeSettings();
+    }, { signal });
+    // Fresh sheet — slide out / slide in a new sheet of bubbles
+    // WITHOUT touching the user's picked numbers, current game
+    // counter or ghost row. Just gives them a refilled board.
+    if (settingsFreshSheetEl) settingsFreshSheetEl.addEventListener('click', () => {
+      refillSheet();
       closeSettings();
     }, { signal });
     if (settingsAudioEl) settingsAudioEl.addEventListener('click', () => {
       audioEnabled = !audioEnabled;
       refreshSettingsLabels();
     }, { signal });
-    if (settingsTiltEl) settingsTiltEl.addEventListener('click', () => {
-      if (tiltEnabled) disableTilt();
-      else             enableTiltOnGesture();
-      refreshSettingsLabels();
-      // iOS's permission resolves asynchronously; refresh again once
-      // the promise typically settles so the toggle reflects reality.
-      setTimeout(refreshSettingsLabels, 400);
-    }, { signal });
-    if (settingsSkipEl) settingsSkipEl.addEventListener('click', () => {
-      ensureAudio();
-      autoFillCurrentRow();
+    if (settingsHowToEl) settingsHowToEl.addEventListener('click', () => {
+      // Placeholder — How-to-play panel TBD.
       closeSettings();
     }, { signal });
     if (settingsExitEl) settingsExitEl.addEventListener('click', () => {
@@ -1278,10 +1284,6 @@ export default function BubbleWrapFidget() {
         if (resumeIntroBall) resumeIntroBall();
       }
     }, { signal });
-    if (settingsHowToEl) settingsHowToEl.addEventListener('click', () => {
-      // Placeholder — How-to-play panel TBD.
-      closeSettings();
-    }, { signal });
 
     // Pill (>> ) — auto-pops enough bubbles to complete the current row
     // (one game = NUMBERS_PER_GAME bubbles). Re-tap to advance another
@@ -1293,19 +1295,55 @@ export default function BubbleWrapFidget() {
 
     /* "Fast select" — fill the current row and queue up enough rows
        to complete `totalGames`. autoPlayQueue is decremented after each
-       row completes (in addSelected) so successive rows auto-trigger. */
+       row completes (in addSelected) so successive rows auto-trigger.
+       The button doubles as a Stop: once started, its label/icon flip
+       to Stop and a second click aborts the cascade. Abort uses a
+       generation counter so any setTimeouts that have already been
+       scheduled (per-pop cascade + per-row chain) bail when they
+       discover their generation is stale. */
     let autoPlayQueue = 0;
+    let fastSelectActive = false;
+    let autoFillCancelGen = 0;
+    function setFastSelectActive(active) {
+      if (active === fastSelectActive) return;
+      fastSelectActive = active;
+      if (!ctaFastSelectEl) return;
+      ctaFastSelectEl.classList.toggle('is-stop', active);
+      ctaFastSelectEl.setAttribute(
+        'aria-label',
+        active ? 'Stop fast select' : 'Fast select all remaining games',
+      );
+      const label = ctaFastSelectEl.querySelector('.ctl-fast-label');
+      if (label) label.textContent = active ? 'Stop' : 'Fast select';
+    }
     if (ctaFastSelectEl) ctaFastSelectEl.addEventListener('click', () => {
       ensureAudio();
+      if (fastSelectActive) {
+        // Abort: bump the gen so any in-flight setTimeouts skip,
+        // zero the queue so addSelected doesn't schedule the next
+        // row, and flip the button back.
+        autoFillCancelGen++;
+        autoPlayQueue = 0;
+        setFastSelectActive(false);
+        return;
+      }
+      // Start a fresh cascade.
       const remaining = Math.max(0, totalGames - currentGame - 1);
+      if (remaining <= 0 && (NUMBERS_PER_GAME - currentSelections.length) <= 0) {
+        return; // nothing to do
+      }
       autoPlayQueue = remaining;
+      setFastSelectActive(true);
       autoFillCurrentRow();
     }, { signal });
 
     function autoFillCurrentRow() {
       // Bail if the user has already hit the game limit (Fast select
       // / Skip cascades shouldn't keep firing past it).
-      if (currentGame >= totalGames) return;
+      if (currentGame >= totalGames) {
+        setFastSelectActive(false);
+        return;
+      }
       const needed = NUMBERS_PER_GAME - currentSelections.length;
       if (needed <= 0) return;
       const available = [];
@@ -1322,36 +1360,31 @@ export default function BubbleWrapFidget() {
       }
       const popInterval = autoPlayQueue > 0 ? 55 : 110;
       const toPick = Math.min(needed, available.length);
+      // Snapshot the cancel generation so every setTimeout below
+      // can bail if a Stop click invalidates the cascade.
+      const myGen = autoFillCancelGen;
 
       if (toPick === 0) {
-        // Sheet is empty (or in the middle of refilling). Wait for
-        // the full refill cycle and retry. Refill timing:
-        //   maybeRefillSheet delay 280
-        // + sheet-out animation     420
-        // + sheet-in animation      540
-        // + small buffer
-        setTimeout(autoFillCurrentRow, 280 + 420 + 540 + 80);
+        setTimeout(() => {
+          if (autoFillCancelGen !== myGen) return;
+          autoFillCurrentRow();
+        }, 280 + 420 + 540 + 80);
         return;
       }
 
       const picks = available.slice(0, toPick);
-      picks.forEach((n, k) => setTimeout(() => popBubble(n), k * popInterval));
+      picks.forEach((n, k) => setTimeout(() => {
+        if (autoFillCancelGen !== myGen) return;
+        popBubble(n);
+      }, k * popInterval));
 
-      // Not enough bubbles to complete the row this pass — pop what's
-      // available, then schedule a retry AFTER the last pop's
-      // animation finishes and the sheet has refilled. The sheet
-      // refill is automatic via maybeRefillSheet once all bubbles are
-      // popped, which is exactly what happens once these last few
-      // pops land (currentSelections + remaining popped = full sheet).
       if (toPick < needed) {
         const lastPopAt = (toPick - 1) * popInterval;
-        //   pop animation               320
-        // + maybeRefillSheet delay      280
-        // + sheet-out animation         420
-        // + sheet-in animation          540
-        // + buffer                      100
         const refillTotalMs = 320 + 280 + 420 + 540 + 100;
-        setTimeout(autoFillCurrentRow, lastPopAt + refillTotalMs);
+        setTimeout(() => {
+          if (autoFillCancelGen !== myGen) return;
+          autoFillCurrentRow();
+        }, lastPopAt + refillTotalMs);
       }
     }
 
@@ -2004,10 +2037,14 @@ export default function BubbleWrapFidget() {
             type="button"
             aria-label="Fast select all remaining games"
           >
-            <svg className="ctl-fast-icon" viewBox="0 0 18 18" aria-hidden="true">
+            {/* Two icons — CSS hides one based on .is-stop on the parent. */}
+            <svg className="ctl-fast-icon ctl-fast-icon-lightning" viewBox="0 0 18 18" aria-hidden="true">
               <polygon points="10,1 3,10 8,10 7,17 15,7 10,7" fill="currentColor" />
             </svg>
-            <span>Fast select</span>
+            <svg className="ctl-fast-icon ctl-fast-icon-stop" viewBox="0 0 18 18" aria-hidden="true">
+              <rect x="4" y="4" width="10" height="10" rx="1.5" fill="currentColor" />
+            </svg>
+            <span className="ctl-fast-label">Fast select</span>
           </button>
         </div>
       </div>
@@ -2043,22 +2080,21 @@ export default function BubbleWrapFidget() {
           backdrop or any action closes it. */}
       <div className="settings-backdrop" id="settingsBackdrop" aria-hidden="true">
         <div className="settings-modal" role="dialog" aria-label="Settings">
-          <button className="settings-btn" id="settingsHowToPlay" type="button">
-            How to Play
+          <button className="settings-btn" id="settingsJumpToTicket" type="button">
+            Jump to ticket
           </button>
           <button className="settings-btn" id="settingsReset" type="button">
             Start over
+          </button>
+          <button className="settings-btn" id="settingsFreshSheet" type="button">
+            Fresh sheet
           </button>
           <button className="settings-btn settings-toggle" id="settingsAudio" type="button">
             <span>Audio</span>
             <span className="settings-toggle-state">On</span>
           </button>
-          <button className="settings-btn settings-toggle" id="settingsTilt" type="button">
-            <span>Tilt</span>
-            <span className="settings-toggle-state">On</span>
-          </button>
-          <button className="settings-btn" id="settingsSkip" type="button">
-            Skip
+          <button className="settings-btn" id="settingsHowToPlay" type="button">
+            How to play
           </button>
           <button className="settings-btn settings-btn-exit" id="settingsExit" type="button">
             Exit Game

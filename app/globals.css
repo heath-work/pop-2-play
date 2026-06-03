@@ -635,6 +635,22 @@ body {
 }
 .ctl-fast-select span { white-space: nowrap; }
 .ctl-fast-icon { width: 18px; height: 18px; }
+/* Two icons live inside the button; toggle which renders based on
+   whether the cascade is running (the .is-stop class is applied
+   by setFastSelectActive). */
+.ctl-fast-icon-stop { display: none; }
+.ctl-fast-select.is-stop .ctl-fast-icon-lightning { display: none; }
+.ctl-fast-select.is-stop .ctl-fast-icon-stop      { display: inline-block; }
+/* Stop state takes the same vivid purple as the intro's Get popping
+   CTA — keeps the "active / engaged" affordance consistent across
+   the two primary commit buttons in the app. */
+.ctl-fast-select.is-stop {
+  background: #9951DB;
+  border-color: rgba(255, 255, 255, 0.18);
+}
+.ctl-fast-select.is-stop:hover {
+  background: #a965e2;
+}
 
 /* Legacy CTA buttons (cta-reset, cta-randomise, cta-help, cta-primary)
    are no longer in the DOM — the .cta-* rules above are kept-out so
