@@ -7,7 +7,7 @@ import * as THREE from 'three';
    badge sits in the top-right corner of the viewport so you can
    confirm at a glance that the iOS PWA cache has picked up the
    latest build. */
-const APP_VERSION = 'v41';
+const APP_VERSION = 'v49';
 
 /* ════════════════════════════════════════════════════════════════════
    3D LOTTO BALL TEXTURE — ported from the shakeit app.
@@ -224,8 +224,14 @@ function makeBallTexture(number, white = false, opts = {}) {
 /* ════════════════════════════════════════════════════════════════════
    GAME CONFIG
    ════════════════════════════════════════════════════════════════════ */
-const NUMBERS_PER_GAME = 8;
-const DEFAULT_GAMES = 20;
+/* MAX_NUMBERS_PER_GAME is the JSX render count for tray rings — we
+   always render that many DOM slots and let the active draw mode
+   hide the extras via CSS. NUMBERS_PER_GAME is the LIVE count used
+   by game logic (8 for Powerball, 7 for Oz Lotto). It's a `let`
+   because the draw-mode select on the intro updates it. */
+const MAX_NUMBERS_PER_GAME = 8;
+let   NUMBERS_PER_GAME     = 8;
+const DEFAULT_GAMES = 14;
 
 /* Spin-in: ball enters from below the ring slot, spins on Y, then
    settles dead-front with the glyph upright. With the front disc at
@@ -236,6 +242,13 @@ const SPIN_DURATION_MS  = 700;
 const SPIN_REVOLUTIONS  = 2.4;
 const FINAL_ROT_X       = 0;
 const FINAL_ROT_Y       = 0;
+/* Brand-style balls use the 6-disc antiprism layout — no disc sits at
+   (lat=0, lon=π/2) (front-centre), so a default rotation of (0,0,0)
+   shows no number head-on. Rotating −36° around the X axis brings the
+   southern-front disc (lat=−36°, lon=π/2) up to the equator at the
+   front, giving a single big number facing the camera (with smaller
+   ones peeking in from the upper hemisphere). */
+const BRAND_FINAL_ROT_X = -36 * Math.PI / 180;
 
 export default function BubbleWrapFidget() {
   useEffect(() => {
@@ -289,6 +302,20 @@ export default function BubbleWrapFidget() {
     const POP_SRC = '/bubble-pop.mp3';
     const POP_POOL_SIZE = 8;
     let audioEnabled = true;
+    // Brand style — when on, in-game balls render with the same look
+    // as the outro orbit: flat unlit colour (no baked sheen gradient),
+    // 6-disc antiprism number layout, 80% opacity. Off by default;
+    // the toggle on the intro flips it.
+    let brandEnabled = false;
+    /* Draw mode — chosen via the intro's "Draws" select.
+       'powerball' (default) → 8 balls per row, all non-white balls
+       render BLUE, last slot is the white powerball.
+       'ozlotto' → 7 balls per row, multi-colour palette, no white
+       powerball at the end. */
+    let drawMode = 'powerball';
+    function isPowerballSlot(slotIdx) {
+      return drawMode === 'powerball' && slotIdx === NUMBERS_PER_GAME - 1;
+    }
     let audioCtx = null;
     let popBuffer = null;
     let popBufferLoading = false;
@@ -786,14 +813,68 @@ export default function BubbleWrapFidget() {
       raf:    null,
     };
     function getBallTexture(num, white = false) {
-      // Cache keyed on (number, whiteness) since the same number can be
-      // a coloured regular ball OR a white powerball (the 8th of a row).
-      const key = white ? `w${num}` : `c${num}`;
+      // Cache key includes brand mode AND draw mode — Powerball
+      // recolours all non-white balls to blue (#hue 215), so the
+      // texture for ball "23" differs between Powerball and
+      // Oz Lotto and they can't share a cache entry.
+      const key = `${brandEnabled ? 'b' : ''}${drawMode[0]}${white ? 'w' : 'c'}${num}`;
       let t = ballScene.texCache.get(key);
       if (t) return t;
-      t = makeBallTexture(num, white);
+      const opts = {};
+      if (brandEnabled) {
+        opts.discPositions = ANTIPRISM_DISC_POSITIONS;
+        opts.angularR      = 0.40;
+        opts.noGradient    = true;
+      }
+      // Powerball: every non-white ball is BLUE. The number on the
+      // ball remains its raw value (the bubble's printed num); only
+      // the fill colour is recoloured.
+      if (drawMode === 'powerball' && !white) {
+        opts.fill      = ballFillCss(215);
+        opts.textColor = numTextColor(215);
+      }
+      t = makeBallTexture(num, white, opts);
       ballScene.texCache.set(key, t);
       return t;
+    }
+    function setBrandEnabled(v) {
+      if (brandEnabled === v) return;
+      brandEnabled = v;
+      // Drop cached textures so the next pop bakes them in the new
+      // style. Dispose first so the GPU releases the old textures.
+      // NOTE: in-game brand balls stay OPAQUE — the orbit balls are
+      // 80% transparent over a dark-navy backdrop where that reads
+      // correctly, but the tray sits over a pink/purple gradient
+      // and a translucent red blends toward orange. Opaque
+      // materials preserve the true hue while keeping the brand
+      // TEXTURE style (flat fill, 6-disc antiprism numbering).
+      for (const tex of ballScene.texCache.values()) tex.dispose();
+      ballScene.texCache.clear();
+    }
+    /* Apply a new draw mode — updates NUMBERS_PER_GAME (8 vs 7),
+       clears the texture cache (Powerball recolours non-white balls
+       to blue), toggles the tray-rings class so CSS can hide the
+       8th ring for Oz Lotto, and re-runs the ring-centre snapshot
+       so the ball-scene aims at the new visible slot count. */
+    function setDrawMode(mode) {
+      if (mode !== 'powerball' && mode !== 'ozlotto') return;
+      if (drawMode === mode) return;
+      drawMode = mode;
+      NUMBERS_PER_GAME = mode === 'powerball' ? 8 : 7;
+      for (const tex of ballScene.texCache.values()) tex.dispose();
+      ballScene.texCache.clear();
+      // Body-level class so any descendant (tray rings, ghost rows,
+      // PB label, etc.) can pick up the mode change via CSS without
+      // each having its own toggle.
+      document.body.classList.toggle('is-ozlotto', mode === 'ozlotto');
+      // Re-measure slot centres so balls drop into the new visible
+      // slot count (resizeBallScene reads the current ringEls and
+      // trims to NUMBERS_PER_GAME — see its implementation). Defer
+      // a frame so the body class swap has actually applied the
+      // CSS grid change before we measure ring rects.
+      if (ballScene.renderer) {
+        requestAnimationFrame(() => resizeBallScene());
+      }
     }
     function initBallScene() {
       if (!ballCanvas || !ringsEl) return;
@@ -819,11 +900,13 @@ export default function BubbleWrapFidget() {
       ballScene.scene = scene;
       ballScene.camera = camera;
       ballScene.geometry = geometry;
-      // Build TWO banks of NUMBERS_PER_GAME meshes (16 total) so two
-      // consecutive rows can coexist briefly — previous row's balls
-      // finish their drop animation in one bank while the new row's
-      // pops spawn fresh meshes in the other bank.
-      for (let i = 0; i < NUMBERS_PER_GAME * 2; i++) {
+      // Build TWO banks of MAX_NUMBERS_PER_GAME meshes (16 total) so
+      // two consecutive rows can coexist briefly — previous row's
+      // balls finish their drop animation in one bank while the new
+      // row's pops spawn fresh meshes in the other bank. We size to
+      // the MAX so the pool survives draw-mode switches without
+      // rebuilding GPU resources.
+      for (let i = 0; i < MAX_NUMBERS_PER_GAME * 2; i++) {
         const mat = new THREE.MeshBasicMaterial({ map: null });
         const mesh = new THREE.Mesh(geometry, mat);
         mesh.visible = false;
@@ -856,7 +939,10 @@ export default function BubbleWrapFidget() {
       cam.far = 1000;
       cam.updateProjectionMatrix();
       // Snapshot each ring centre & radius in canvas-local pixel coords.
-      ballScene.slotCenters = ringEls.map(ring => {
+      // Slice to the ACTIVE slot count (Oz Lotto hides ring #8 via CSS,
+      // so its bounding rect would collapse to 0×0 — skip it entirely
+      // so the ball scene never targets a phantom slot).
+      ballScene.slotCenters = ringEls.slice(0, NUMBERS_PER_GAME).map(ring => {
         const r = ring.getBoundingClientRect();
         return {
           x: r.left - rect.left + r.width / 2,
@@ -917,15 +1003,18 @@ export default function BubbleWrapFidget() {
           mesh.position.z = anim.zPos || 0;     // newer ball = higher z, renders in front
           mesh.scale.setScalar(ballScene.ballRadius);
           const spinPhase = (1 - eased) * Math.PI * 2;
+          // Brand-style balls land on a different X rotation so a
+          // number sits front-on (see BRAND_FINAL_ROT_X comment).
+          const fx = brandEnabled ? BRAND_FINAL_ROT_X : FINAL_ROT_X;
           mesh.rotation.set(
-            FINAL_ROT_X + anim.spinX * spinPhase,
+            fx + anim.spinX * spinPhase,
             FINAL_ROT_Y + anim.spinY * spinPhase,
             0           + anim.spinZ * spinPhase,
           );
           mesh.visible = true;
           if (t >= 1) {
             mesh.position.set(targetX, targetY, anim.zPos || 0);
-            mesh.rotation.set(FINAL_ROT_X, FINAL_ROT_Y, 0);
+            mesh.rotation.set(fx, FINAL_ROT_Y, 0);
             ballScene.animations.splice(i, 1);
           }
         } else if (anim.kind === 'slide-up-fade') {
@@ -968,7 +1057,7 @@ export default function BubbleWrapFidget() {
       const meshIdx = ballScene.activeGroupBase + slotIdx;
       const mesh = ballScene.meshes[meshIdx];
       if (!mesh) return;
-      const white = slotIdx === NUMBERS_PER_GAME - 1;
+      const white = isPowerballSlot(slotIdx);
       const tex = getBallTexture(number, white);
       if (mesh.material.map !== tex) {
         mesh.material.map = tex;
@@ -1048,8 +1137,12 @@ export default function BubbleWrapFidget() {
       const row = document.createElement('div');
       row.className = 'ghost-row';
       nums.forEach((n, i) => {
-        const h = ballHue(n);
-        const isPowerball = i === NUMBERS_PER_GAME - 1;
+        const isPowerball = isPowerballSlot(i);
+        // Powerball mode forces every non-white ghost to render
+        // blue (hue 215), matching the in-game ball recolour.
+        const h = isPowerball
+          ? null
+          : (drawMode === 'powerball' ? 215 : ballHue(n));
         const cell = document.createElement('div');
         cell.className = 'ghost';
         cell.textContent = String(n);
@@ -1120,11 +1213,11 @@ export default function BubbleWrapFidget() {
     }
 
     function addSelected(num) {
-      // 8th ball is the "powerball": override the bubble's number
-      // with a random value from 1..25 that isn't already in this
-      // row. The user doesn't see the bubble's printed number
-      // (bubbles have no visible glyph), so substituting is fine.
-      const isPowerball = currentSelections.length === NUMBERS_PER_GAME - 1;
+      // Powerball mode only: the last slot is the "powerball" —
+      // override the bubble's number with a random value from
+      // 1..25 that isn't already in this row. Oz Lotto has no
+      // powerball; every slot is a regular multi-colour ball.
+      const isPowerball = isPowerballSlot(currentSelections.length);
       if (isPowerball) {
         const exclude = new Set(currentSelections);
         const candidates = [];
@@ -1538,7 +1631,9 @@ export default function BubbleWrapFidget() {
     const introStartEl  = document.getElementById('introStart');
     const introAudioEl  = document.getElementById('introAudio');
     const introTiltEl   = document.getElementById('introTilt');
+    const introBrandEl  = document.getElementById('introBrand');
     const introGamesEl  = document.getElementById('introGames');
+    const introDrawsEl  = document.getElementById('introDraws');
 
     /* ── Outro overlay ─────────────────────────────────────────── */
     const outroEl     = document.getElementById('outro');
@@ -1851,22 +1946,47 @@ export default function BubbleWrapFidget() {
       const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 2000);
       camera.position.z = 800;
 
-      // Three balls matching the design reference. baseX/baseY are
-      // FRACTIONS of canvas dimensions (so the layout scales with the
-      // viewport); scaleK is the ball's radius as a fraction of the
-      // canvas's shorter side; parallaxDepth multiplies the tilt
-      // shift so the foreground ball (pink) drifts more than the
-      // side balls (classic window-parallax feel).
-      const ballSpecs = [
-        { num: 23, hue: 215, baseX: -0.42, baseY:  0.22, scaleK: 0.18, spinRate:  0.022, depth: 0.55 },
-        { num: 35, hue: 325, baseX:  0.04, baseY: -0.02, scaleK: 0.21, spinRate: -0.019, depth: 1.00 },
-        { num:  6, hue:  54, baseX:  0.42, baseY:  0.28, scaleK: 0.17, spinRate:  0.024, depth: 0.60 },
-      ];
-      // Shared sphere geometry — three meshes reuse it; we only
-      // dispose it once on cleanup.
+      // Six balls evenly distributed around a single ring that's
+      // tilted ~30° forward at the bottom so we see it from above.
+      // Each ball spins on its own axis while the whole ring rotates
+      // around its center. Numbers 1-6 give six distinct hues from
+      // HUE_MAP (red/yellow/green/cyan/blue/purple). The depth-axis
+      // ball position is used both for back-to-front render sorting
+      // (transparency layering) and for a manual scale multiplier
+      // (close balls bigger, far balls smaller).
+      const RING_BALL_COUNT  = 6;
+      const RING_RADIUS_K    = 0.36;     // ring radius as fraction of min(w,h)
+      const ORBIT_SPEED      = 0.010;    // rad/frame → ~10 s per full orbit
+      const RING_TILT        = Math.PI / 6;   // 30° forward at the bottom
+      const RING_TILT_COS    = Math.cos(RING_TILT);
+      const RING_TILT_SIN    = Math.sin(RING_TILT);
+      // Per-ball scale = SCALE_BASE + zNorm * SCALE_AMP where
+      // zNorm ∈ [-1, +1] is the ball's depth fraction along the
+      // tilt axis. SCALE_BASE 1.0 keeps the side balls at nominal
+      // size; ±0.45 puts the front ball ~45% bigger than nominal
+      // and the back ball ~45% smaller.
+      const SCALE_BASE = 1.00;
+      const SCALE_AMP  = 0.45;
+      const ringSpecs = Array.from({ length: RING_BALL_COUNT }, (_, i) => {
+        const num = i + 1;
+        // Ball #1 would normally map to red (HUE_MAP[0]=4); override
+        // to pink (325) so the ring reads softer against the dark
+        // navy backdrop and matches the brand palette better.
+        const hue = num === 1 ? 325 : HUE_MAP[(num - 1) % HUE_MAP.length];
+        return {
+          num,
+          hue,
+          // Start with the foreground ball at the bottom-front of
+          // the ring so the layout reads correctly from frame 1.
+          angleOffset: (i / RING_BALL_COUNT) * Math.PI * 2 - Math.PI / 2,
+          scaleK: 0.10,                  // base radius fraction of min(w,h)
+          spinRate: 0.018 + (i % 3) * 0.004,
+          depth: 0.45,                   // tilt-parallax multiplier
+        };
+      });
+
       const geometry = new THREE.SphereGeometry(1, 64, 64);
-      const balls = [];
-      for (const spec of ballSpecs) {
+      function buildBall(spec) {
         const tex = makeBallTexture(spec.num, false, {
           fill: ballFillCss(spec.hue),
           textColor: numTextColor(spec.hue),
@@ -1875,15 +1995,18 @@ export default function BubbleWrapFidget() {
           noGradient: true,
         });
         tex.colorSpace = THREE.SRGBColorSpace;
-        const mat  = new THREE.MeshBasicMaterial({ map: tex });
+        // transparent + opacity 0.8 → balls let the dark backdrop
+        // bleed through slightly, softening them against the panel.
+        const mat  = new THREE.MeshBasicMaterial({
+          map: tex, transparent: true, opacity: 0.8,
+        });
         const mesh = new THREE.Mesh(geometry, mat);
-        // Stagger initial rotations so the three balls don't all
-        // present the same face simultaneously.
         mesh.rotation.y = spec.num * 0.73;
         mesh.rotation.x = spec.num * 0.21;
-        scene.add(mesh);
-        balls.push({ spec, mesh, mat, tex });
+        return { spec, mesh, mat, tex };
       }
+      const ring = ringSpecs.map(buildBall);
+      for (const b of ring) scene.add(b.mesh);
 
       function sizeTo() {
         const r = cvs.getBoundingClientRect();
@@ -1893,10 +2016,10 @@ export default function BubbleWrapFidget() {
         camera.left = -w / 2; camera.right = w / 2;
         camera.top  =  h / 2; camera.bottom = -h / 2;
         camera.updateProjectionMatrix();
+        // Base mesh scale — the tick multiplies this by the
+        // depth-derived size factor each frame.
         const s = Math.min(w, h);
-        for (const b of balls) {
-          b.mesh.scale.setScalar(s * b.spec.scaleK);
-        }
+        for (const b of ring) b.mesh.userData.baseScale = s * b.spec.scaleK;
       }
       sizeTo();
       const ro = (typeof ResizeObserver !== 'undefined')
@@ -1912,23 +2035,45 @@ export default function BubbleWrapFidget() {
 
       let raf = null;
       let stopped = false;
+      // Orbit accumulator — increments each frame, drives the ring's
+      // angular position. Stays in [0, 2π) for numerical stability
+      // over long sessions.
+      let orbitAngle = 0;
       function tick() {
         if (stopped) { raf = null; return; }
         raf = requestAnimationFrame(tick);
         smoothTiltX += (outroTiltN.x - smoothTiltX) * SMOOTH;
         smoothTiltY += (outroTiltN.y - smoothTiltY) * SMOOTH;
+        orbitAngle = (orbitAngle + ORBIT_SPEED) % (Math.PI * 2);
         const r = cvs.getBoundingClientRect();
         const w = Math.max(1, Math.round(r.width));
         const h = Math.max(1, Math.round(r.height));
-        for (const b of balls) {
+        const ringR = Math.min(w, h) * RING_RADIUS_K;
+
+        // Tilted orbit: parametrize on a circle in the X axis, then
+        // rotate the circle around X by RING_TILT so its bottom edge
+        // pitches toward the camera. The Y component foreshortens by
+        // cos(tilt); a new Z component drives both render order and
+        // the per-ball scale (front bigger, back smaller).
+        for (const b of ring) {
           b.mesh.rotation.y += b.spec.spinRate;
-          // Subtle X tumble for visual variety (much slower than Y).
           b.mesh.rotation.x += b.spec.spinRate * 0.18;
-          const baseX = b.spec.baseX * w;
-          const baseY = b.spec.baseY * h;
-          b.mesh.position.x = baseX + smoothTiltX * PARALLAX_AMP * b.spec.depth;
-          b.mesh.position.y = baseY + smoothTiltY * PARALLAX_AMP * b.spec.depth;
+          const a  = b.spec.angleOffset + orbitAngle;
+          const sa = Math.sin(a), ca = Math.cos(a);
+          const ox = ca * ringR;
+          const oy = sa * ringR * RING_TILT_COS;
+          // Sign: bottom of orbit (sa = -1) should be CLOSER to the
+          // camera → positive z (camera looks down -Z by default).
+          const oz = -sa * ringR * RING_TILT_SIN;
+          b.mesh.position.x = ox + smoothTiltX * PARALLAX_AMP * b.spec.depth;
+          b.mesh.position.y = oy + smoothTiltY * PARALLAX_AMP * b.spec.depth;
+          b.mesh.position.z = oz;
+          // Depth-fraction in [-1, +1]: +1 = closest, -1 = farthest.
+          const zNorm = oz / (ringR * RING_TILT_SIN || 1);
+          const scale = b.mesh.userData.baseScale * (SCALE_BASE + zNorm * SCALE_AMP);
+          b.mesh.scale.setScalar(scale);
         }
+
         renderer.render(scene, camera);
       }
       // Initial render so the canvas isn't blank during the
@@ -1949,10 +2094,7 @@ export default function BubbleWrapFidget() {
         if (raf) { cancelAnimationFrame(raf); raf = null; }
         ro?.disconnect();
         geometry.dispose();
-        for (const b of balls) {
-          b.tex.dispose();
-          b.mat.dispose();
-        }
+        for (const b of ring) { b.tex.dispose(); b.mat.dispose(); }
         renderer.dispose();
       };
     })();
@@ -2053,6 +2195,7 @@ export default function BubbleWrapFidget() {
     function refreshIntroToggles() {
       if (introAudioEl) introAudioEl.setAttribute('aria-pressed', audioEnabled ? 'true' : 'false');
       if (introTiltEl)  introTiltEl.setAttribute('aria-pressed',  tiltEnabled  ? 'true' : 'false');
+      if (introBrandEl) introBrandEl.setAttribute('aria-pressed', brandEnabled ? 'true' : 'false');
     }
     refreshIntroToggles();
     // Games-count selector — drives totalGames so the bottom pill
@@ -2065,6 +2208,15 @@ export default function BubbleWrapFidget() {
           totalGames = v;
           refreshPill();
         }
+      }, { signal });
+    }
+    // Draws-mode selector — Powerball vs Oz Lotto. setDrawMode
+    // updates NUMBERS_PER_GAME, the texture cache, and the visible
+    // slot count + PB label all in one call.
+    if (introDrawsEl) {
+      introDrawsEl.value = drawMode;
+      introDrawsEl.addEventListener('change', () => {
+        setDrawMode(introDrawsEl.value);
       }, { signal });
     }
     if (outroViewEl) outroViewEl.addEventListener('click', () => {
@@ -2098,6 +2250,10 @@ export default function BubbleWrapFidget() {
         refreshIntroToggles();
         setTimeout(() => { refreshIntroToggles(); refreshSettingsLabels(); }, 400);
       }
+    }, { signal });
+    if (introBrandEl) introBrandEl.addEventListener('click', () => {
+      setBrandEnabled(!brandEnabled);
+      refreshIntroToggles();
     }, { signal });
     if (introStartEl) introStartEl.addEventListener('click', () => {
       // Don't call ensureAudio() here — see comment in the original
@@ -2271,6 +2427,34 @@ export default function BubbleWrapFidget() {
               <span className="intro-switch-on">On</span>
             </button>
           </div>
+          {/* Brand toggle hidden for now — markup kept so the
+              setBrandEnabled logic stays wired for a future
+              re-enable. */}
+          <div className="intro-toggle" style={{ display: 'none' }}>
+            <span className="intro-toggle-label">Brand</span>
+            <button
+              className="intro-switch"
+              id="introBrand"
+              type="button"
+              aria-pressed="false"
+              aria-label="Toggle brand style"
+            >
+              <span className="intro-switch-off">Off</span>
+              <span className="intro-switch-on">On</span>
+            </button>
+          </div>
+          <div className="intro-toggle">
+            <span className="intro-toggle-label">Draws</span>
+            <select
+              className="intro-select"
+              id="introDraws"
+              aria-label="Lottery draw type"
+              defaultValue="powerball"
+            >
+              <option value="powerball">Powerball</option>
+              <option value="ozlotto">Oz Lotto</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -2308,7 +2492,7 @@ export default function BubbleWrapFidget() {
 
         <div className="tray-balls">
           <div className="tray-rings" id="trayRings">
-            {Array.from({ length: NUMBERS_PER_GAME }, (_, i) => (
+            {Array.from({ length: MAX_NUMBERS_PER_GAME }, (_, i) => (
               <div className="ring" key={i} />
             ))}
           </div>

@@ -374,6 +374,23 @@ body {
   grid-template-columns: repeat(8, 1fr);
   gap: 5px;
 }
+/* Oz Lotto draws have only 7 balls per row — collapse the 8th
+   ring to nothing, and shrink the grid to 7 columns so the
+   visible slots redistribute across the tray width. The body
+   class is the single source of truth, set by setDrawMode. */
+body.is-ozlotto .tray-rings {
+  grid-template-columns: repeat(7, 1fr);
+}
+body.is-ozlotto .tray-rings .ring:nth-child(8) {
+  display: none;
+}
+body.is-ozlotto .tray-ghost-row .ghost-row {
+  grid-template-columns: repeat(7, 1fr);
+}
+/* Hide the "PB" header label — Oz Lotto has no powerball slot. */
+body.is-ozlotto .tray-label-right {
+  visibility: hidden;
+}
 .ring {
   width: 100%;
   aspect-ratio: 1 / 1;
@@ -739,12 +756,20 @@ body {
    flex column layout. */
 .outro-balls {
   position: absolute;
-  top: 0;
+  /* Lifted above the viewport so the cluster sits higher and
+     leaves more breathing room before the title. Negative top
+     simply translates the whole canvas; ball positions are
+     computed inside it and shift with it. */
+  top: -180px;
   left: 0;
   width: 100%;
   height: 46%;
   pointer-events: none;
   z-index: 1;
+  /* Sub-pixel blur — knocks the harsh edge off the canvas's
+     sphere rasterization so the balls feel rendered in the same
+     soft layer as the rest of the overlay's frosted backdrop. */
+  filter: blur(0.25px);
 }
 .outro-title,
 .outro-body,
