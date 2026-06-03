@@ -7,7 +7,7 @@ import * as THREE from 'three';
    badge sits in the top-right corner of the viewport so you can
    confirm at a glance that the iOS PWA cache has picked up the
    latest build. */
-const APP_VERSION = 'v23';
+const APP_VERSION = 'v24';
 
 /* ════════════════════════════════════════════════════════════════════
    3D LOTTO BALL TEXTURE — ported from the shakeit app.
@@ -22,7 +22,9 @@ const APP_VERSION = 'v23';
    app doesn't reach back into shakeit. Single-file footprint also
    keeps Next.js per-route code-splitting simple.
    ════════════════════════════════════════════════════════════════════ */
-const HUE_MAP = [4, 32, 54, 100, 170, 215, 270, 325];
+// Hue palette — orange (32) removed by request; 7 hues cycle through
+// the numbered balls.
+const HUE_MAP = [4, 54, 100, 170, 215, 270, 325];
 function ballHue(n) { return HUE_MAP[(n - 1) % HUE_MAP.length]; }
 /* Lightness sits at 0.50 — vivid mid-tone, close to the raw hex.
    We render through MeshBasicMaterial (unlit) so the texture colour
@@ -53,12 +55,15 @@ function ballLuminance(h) {
   const lin = v => v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
   return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
 }
-/* Threshold 0.35 — yellow / green / cyan / orange all have luminance
-   ≥ 0.37 and read better with dark navy glyphs; red / blue / purple /
-   pink fall below and need white. Lower than the WCAG-style 0.45
-   threshold because orange (L≈0.38) genuinely looks better with dark
-   text per the design reference. */
-function numTextColor(h) { return ballLuminance(h) > 0.35 ? '#0b1140' : '#ffffff'; }
+/* Yellow / green / cyan have luminance ≥ 0.45 and read well with dark
+   navy glyphs. Red / purple / pink fall well below and need white.
+   Blue (hue 215, L ≈ 0.17) is special-cased to dark glyphs by request
+   — its saturated mid-tone reads cleanly with #0b1140 even though the
+   luminance-only heuristic would pick white. */
+function numTextColor(h) {
+  if (h === 215) return '#0b1140';                     // blue → dark
+  return ballLuminance(h) > 0.45 ? '#0b1140' : '#ffffff';
+}
 
 /* Two antipodal discs at the equator: front (lon = +π/2 → maps to the
    camera +Z under three.js's default sphere mapping) and back.
@@ -1066,6 +1071,22 @@ export default function BubbleWrapFidget() {
     }
 
     function addSelected(num) {
+      // 8th ball is the "powerball": override the bubble's number
+      // with a random value from 1..25 that isn't already in this
+      // row. The user doesn't see the bubble's printed number
+      // (bubbles have no visible glyph), so substituting is fine.
+      const isPowerball = currentSelections.length === NUMBERS_PER_GAME - 1;
+      if (isPowerball) {
+        const exclude = new Set(currentSelections);
+        const candidates = [];
+        for (let i = 1; i <= 25; i++) {
+          if (!exclude.has(i)) candidates.push(i);
+        }
+        if (candidates.length) {
+          num = candidates[Math.floor(Math.random() * candidates.length)];
+        }
+      }
+
       currentSelections.push(num);
       viewedGameIdx = currentGame;
       const slotIdx = currentSelections.length - 1;
