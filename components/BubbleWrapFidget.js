@@ -7,7 +7,7 @@ import * as THREE from 'three';
    badge sits in the top-right corner of the viewport so you can
    confirm at a glance that the iOS PWA cache has picked up the
    latest build. */
-const APP_VERSION = 'v40';
+const APP_VERSION = 'v41';
 
 /* ════════════════════════════════════════════════════════════════════
    3D LOTTO BALL TEXTURE — ported from the shakeit app.
@@ -1478,6 +1478,9 @@ export default function BubbleWrapFidget() {
     let tiltNeutral = null;
     let tiltEnabled = false;
     const sheetTiltEl = document.getElementById('sheetTilt');
+    // Shared, normalized tilt (-1..1) consumed by the outro ball scene
+    // for parallax. Written by onTilt; read by the outro rAF tick.
+    const outroTiltN = { x: 0, y: 0 };
     function onTilt(e) {
       if (e.beta == null || e.gamma == null || !sheetTiltEl) return;
       if (!tiltNeutral) tiltNeutral = { beta: e.beta, gamma: e.gamma };
@@ -1488,6 +1491,11 @@ export default function BubbleWrapFidget() {
       const tiltY = Math.max(-MAX, Math.min(MAX,  dg * (MAX / 22)));
       sheetTiltEl.style.setProperty('--tilt-x', tiltX.toFixed(2) + 'deg');
       sheetTiltEl.style.setProperty('--tilt-y', tiltY.toFixed(2) + 'deg');
+      // Normalize for outro parallax. Negate so the balls shift
+      // OPPOSITE the phone tilt — reads as "looking past" them
+      // toward a deeper scene, classic window-parallax convention.
+      outroTiltN.x = -tiltY / MAX;
+      outroTiltN.y = -tiltX / MAX;
     }
     function attachOrientationListener() {
       if (tiltEnabled) return;
@@ -1521,6 +1529,8 @@ export default function BubbleWrapFidget() {
       tiltNeutral = null;
       sheetTiltEl?.style.setProperty('--tilt-x', '0deg');
       sheetTiltEl?.style.setProperty('--tilt-y', '0deg');
+      outroTiltN.x = 0;
+      outroTiltN.y = 0;
     }
 
     /* ── Intro overlay ─────────────────────────────────────────── */
@@ -1538,11 +1548,13 @@ export default function BubbleWrapFidget() {
       outroEl.setAttribute('aria-hidden', 'false');
       outroEl.classList.add('outro-show');
       playSheetSwoosh();
+      if (startOutroBalls) startOutroBalls();
     }
     function hideOutro() {
       if (!outroEl) return;
       outroEl.classList.remove('outro-show');
       outroEl.setAttribute('aria-hidden', 'true');
+      if (stopOutroBalls) stopOutroBalls();
     }
 
     /* Intro hero ball — a separate Three.js scene drawing one ball
@@ -1817,6 +1829,134 @@ export default function BubbleWrapFidget() {
       };
     })();
 
+    /* Outro hero — three spinning lotto balls anchored to the top of
+       the "All done, pop star." overlay. One Three.js scene + one
+       orthographic camera; each ball is a mesh with its own texture,
+       spin rate, base position, and parallax-depth multiplier. The
+       rAF loop runs only while the outro is visible (start/stop are
+       wired into show/hideOutro) so we're not burning frames on the
+       game screen. */
+    let disposeOutroBalls = null;
+    let startOutroBalls   = null;
+    let stopOutroBalls    = null;
+    (function initOutroBalls() {
+      const cvs = document.getElementById('outroBallsCanvas');
+      if (!cvs) return;
+      const renderer = new THREE.WebGLRenderer({
+        canvas: cvs, antialias: true, alpha: true,
+      });
+      renderer.setClearColor(0x000000, 0);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      const scene  = new THREE.Scene();
+      const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 2000);
+      camera.position.z = 800;
+
+      // Three balls matching the design reference. baseX/baseY are
+      // FRACTIONS of canvas dimensions (so the layout scales with the
+      // viewport); scaleK is the ball's radius as a fraction of the
+      // canvas's shorter side; parallaxDepth multiplies the tilt
+      // shift so the foreground ball (pink) drifts more than the
+      // side balls (classic window-parallax feel).
+      const ballSpecs = [
+        { num: 23, hue: 215, baseX: -0.42, baseY:  0.22, scaleK: 0.18, spinRate:  0.022, depth: 0.55 },
+        { num: 35, hue: 325, baseX:  0.04, baseY: -0.02, scaleK: 0.21, spinRate: -0.019, depth: 1.00 },
+        { num:  6, hue:  54, baseX:  0.42, baseY:  0.28, scaleK: 0.17, spinRate:  0.024, depth: 0.60 },
+      ];
+      // Shared sphere geometry — three meshes reuse it; we only
+      // dispose it once on cleanup.
+      const geometry = new THREE.SphereGeometry(1, 64, 64);
+      const balls = [];
+      for (const spec of ballSpecs) {
+        const tex = makeBallTexture(spec.num, false, {
+          fill: ballFillCss(spec.hue),
+          textColor: numTextColor(spec.hue),
+          discPositions: ANTIPRISM_DISC_POSITIONS,
+          angularR: 0.40,
+          noGradient: true,
+        });
+        tex.colorSpace = THREE.SRGBColorSpace;
+        const mat  = new THREE.MeshBasicMaterial({ map: tex });
+        const mesh = new THREE.Mesh(geometry, mat);
+        // Stagger initial rotations so the three balls don't all
+        // present the same face simultaneously.
+        mesh.rotation.y = spec.num * 0.73;
+        mesh.rotation.x = spec.num * 0.21;
+        scene.add(mesh);
+        balls.push({ spec, mesh, mat, tex });
+      }
+
+      function sizeTo() {
+        const r = cvs.getBoundingClientRect();
+        const w = Math.max(1, Math.round(r.width));
+        const h = Math.max(1, Math.round(r.height));
+        renderer.setSize(w, h, false);
+        camera.left = -w / 2; camera.right = w / 2;
+        camera.top  =  h / 2; camera.bottom = -h / 2;
+        camera.updateProjectionMatrix();
+        const s = Math.min(w, h);
+        for (const b of balls) {
+          b.mesh.scale.setScalar(s * b.spec.scaleK);
+        }
+      }
+      sizeTo();
+      const ro = (typeof ResizeObserver !== 'undefined')
+        ? new ResizeObserver(sizeTo) : null;
+      if (ro) ro.observe(cvs);
+
+      // Smoothed tilt — exponential lerp toward the latest raw value
+      // so a sharp phone wobble doesn't make the balls snap. Lower
+      // SMOOTH = more lag; 0.12 lands ~95% in 0.5 s at 60 fps.
+      const SMOOTH = 0.12;
+      const PARALLAX_AMP = 36;       // px shift at full tilt × depth
+      let smoothTiltX = 0, smoothTiltY = 0;
+
+      let raf = null;
+      let stopped = false;
+      function tick() {
+        if (stopped) { raf = null; return; }
+        raf = requestAnimationFrame(tick);
+        smoothTiltX += (outroTiltN.x - smoothTiltX) * SMOOTH;
+        smoothTiltY += (outroTiltN.y - smoothTiltY) * SMOOTH;
+        const r = cvs.getBoundingClientRect();
+        const w = Math.max(1, Math.round(r.width));
+        const h = Math.max(1, Math.round(r.height));
+        for (const b of balls) {
+          b.mesh.rotation.y += b.spec.spinRate;
+          // Subtle X tumble for visual variety (much slower than Y).
+          b.mesh.rotation.x += b.spec.spinRate * 0.18;
+          const baseX = b.spec.baseX * w;
+          const baseY = b.spec.baseY * h;
+          b.mesh.position.x = baseX + smoothTiltX * PARALLAX_AMP * b.spec.depth;
+          b.mesh.position.y = baseY + smoothTiltY * PARALLAX_AMP * b.spec.depth;
+        }
+        renderer.render(scene, camera);
+      }
+      // Initial render so the canvas isn't blank during the
+      // overlay's fade-in transition.
+      renderer.render(scene, camera);
+
+      startOutroBalls = () => {
+        if (!raf && !stopped) {
+          sizeTo();   // canvas may have been 0×0 on first paint
+          raf = requestAnimationFrame(tick);
+        }
+      };
+      stopOutroBalls = () => {
+        if (raf) { cancelAnimationFrame(raf); raf = null; }
+      };
+      disposeOutroBalls = () => {
+        stopped = true;
+        if (raf) { cancelAnimationFrame(raf); raf = null; }
+        ro?.disconnect();
+        geometry.dispose();
+        for (const b of balls) {
+          b.tex.dispose();
+          b.mat.dispose();
+        }
+        renderer.dispose();
+      };
+    })();
+
     /* How-to-play loop driver — sequence is:
         [0]    bubble visible
         [2.0s] bubble pop (CSS scale + spawnBurst), 320 ms
@@ -2014,6 +2154,7 @@ export default function BubbleWrapFidget() {
       ac.abort();
       if (disposeIntroBall) { disposeIntroBall(); disposeIntroBall = null; }
       if (disposeHowtoBall) { disposeHowtoBall(); disposeHowtoBall = null; }
+      if (disposeOutroBalls) { disposeOutroBalls(); disposeOutroBalls = null; }
       stopHowtoLoop();
       if (ro) ro.disconnect();
       if (bubblesEl) bubblesEl.innerHTML = '';
@@ -2265,6 +2406,16 @@ export default function BubbleWrapFidget() {
           selected games. View my ticket dismisses it and returns
           to the intro. */}
       <div className="outro" id="outro" aria-hidden="true">
+        {/* Spinning balls anchored to the top of the overlay. Driven
+            by a separate Three.js scene that runs only while the
+            outro is visible; mesh positions get translated by the
+            tilt-parallax read each frame so the balls feel like
+            they're floating above the surface. */}
+        <canvas
+          className="outro-balls"
+          id="outroBallsCanvas"
+          aria-hidden="true"
+        />
         <h1 className="outro-title">All done, pop star.</h1>
         <p className="outro-body">
           Your numbers are locked, your rows are full, and your

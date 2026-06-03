@@ -733,6 +733,26 @@ body {
     opacity   320ms ease-out,
     visibility 0s linear 0s;
 }
+/* Three.js scene canvas pinned to the top of the outro overlay.
+   pointer-events: none so it doesn't eat clicks above the CTA;
+   the centered text/CTA content sits beneath via the overlay's
+   flex column layout. */
+.outro-balls {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 46%;
+  pointer-events: none;
+  z-index: 1;
+}
+.outro-title,
+.outro-body,
+.outro-cta,
+.outro-subtext {
+  position: relative;
+  z-index: 2;
+}
 .outro-title {
   font-family: 'SharpGrotesk', var(--ctl-font);
   font-size: 30px;
